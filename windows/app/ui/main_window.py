@@ -9,8 +9,8 @@ import ctypes
 import threading
 import time
 
-from PySide6.QtCore import (Qt, QTimer, QUrl, QRectF, QPointF, QEvent,
-                            Signal)
+from PySide6.QtCore import (Qt, QTimer, QUrl, QRectF, QPointF, QEvent, QObject,
+                           Signal)
 from PySide6.QtGui import (QIcon, QAction, QPixmap, QPainter, QColor, QPolygonF,
                            QLinearGradient, QBrush, QDesktopServices, QCloseEvent,
                            QDragEnterEvent, QDropEvent, QKeySequence, QShortcut,
