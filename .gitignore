@@ -1,0 +1,37 @@
+# ===== 构建产物 =====
+windows/dist/
+android/dist/
+dist/
+windows/build/
+android/build/
+app/build/
+.gradle/
+local.properties
+
+# ===== 签名密钥（公开仓库绝不提交！泄露=任何人可冒名发布更新）=====
+android/keystore/
+
+# ===== 交付中心（历史版本安装包 900MB+，不进仓库）=====
+release/
+
+# ===== Python =====
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# ===== IDE / 系统 =====
+.idea/
+.vscode/
+.zcodeignore
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== WorkBuddy 项目数据 =====
+.workbuddy/
+
+# ===== 日志与临时 =====
+*.log
+nul

@@ -1,0 +1,209 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  v1.17.0 接收侧文件气泡（严格复刻微信文件卡片 · 本轮加长）
+
+  ★ v1.17.0 变更：卡宽由 0.493 → 0.526（用户要求"加长，和微信一样"）。
+  本轮重新测量两端原图（均 1440px 宽、密度 2.2x ≈ 654.5dp 屏）：
+
+    微信文件卡（1000402955.jpg）：
+      卡宽 714px = 324.5dp（占屏 0.496）；图标 137x173px = 62.3x78.6dp；
+      卡内文字区 ≈ 586px = 266dp
+    FlashDrop 改前（1000402977.jpg）：
+      卡宽 709px = 322.3dp（占屏 0.492，与微信几乎一致）；
+      但文字区只有 462px = 210dp —— 比微信窄 56dp，
+      这才是用户看着"短"的真因。
+
+    修法：按微信文字区 266dp 反推卡宽
+      = 266 + 12(左内边距) + 14(图标左边距) + 40(图标) + 12(右内边距)
+      = 344dp → 占屏 344/654.5 = 0.526（比改前长约 7%）
+
+    卡片宽 = 344dp（由代码 fileCardWidth() 写死，随屏幕等比缩放）
+    卡内左右内边距 = 12dp
+    图标 40x52dp          ← 圆角矩形 + **右上折角**（不是右下缺角）
+    图标右边距卡边 = 12dp （= 左边距，用户要求"左右距离一致"）
+    图标左边距文字 = 14dp
+    → 文字区宽 = 344 - 12 - 14 - 40 - 12 = 266dp（对齐微信实测）
+
+    ┌──────────────────────────────────────────┬────────┐
+    │ 甘肃国钛干部请假审批表.                     │       ╲│
+    │ pdf                                        │  PDF   │
+    │ 88.2 KB  已保存                             │        │
+    └──────────────────────────────────────────┴────────┘
+      ↑ 文字区（固定宽 266dp，左对齐）              ↑ 类型图标（右对齐垂直居中）
+
+  关键点：
+    1) 卡片等宽：宽度由代码写死，不随文字伸缩
+    2) 图标贴右、垂直居中，四周留白与左边距一致
+    3) 文件名最多 2 行，超出用「中间 ... 保留扩展名」截断（代码生成）
+    4) 大小 / 状态（已保存 / 失败 / 待接收）合并到「同一行」
+    5) 图片消息不走本布局（photoMode 直接显示缩略图）
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:paddingLeft="12dp"
+    android:paddingRight="12dp"
+    android:paddingTop="3dp"
+    android:paddingBottom="3dp">
+
+    <ImageView
+        android:id="@+id/msg_avatar"
+        android:layout_width="28dp"
+        android:layout_height="28dp"
+        android:layout_marginTop="2dp" />
+
+    <LinearLayout
+        android:id="@+id/msg_bubble"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginLeft="8dp"
+        android:background="@drawable/bubble_in"
+        android:paddingLeft="12dp"
+        android:paddingRight="12dp"
+        android:paddingTop="10dp"
+        android:paddingBottom="10dp">
+
+        <!-- 左栏：文件名 + 元信息（固定宽度，由 fileCardTextWidth() 写入）
+             ★ v1.18.0：给容器**也**写上固定宽度（宽度值由代码在 bind 时同步）。
+             此前只有里面的 TextView 设了 width，容器仍是 wrap_content ——
+             测量时容器先按"内容自然宽"算一遍，再被 TextView 的固定宽顶开，
+             中间存在一次重排。容器固定后整条链路的期望尺寸在第一次测量
+             就是终值，卡片不再有"先错位再校正"的一帧。 -->
+        <LinearLayout
+            android:id="@+id/msg_textcol"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_gravity="center_vertical">
+
+            <!-- 文件名：严格两行，超出由代码做「中间 …」截断 -->
+            <TextView
+                android:id="@+id/msg_name"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp"
+                android:maxLines="2"
+                android:ellipsize="end"
+                android:lineSpacingExtra="2dp" />
+
+            <!-- 元信息行：进度圈 + 大小 + 状态（已保存/失败/待接收）同处一行 -->
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="3dp"
+                android:gravity="center_vertical">
+
+                <ProgressBar
+                    android:id="@+id/msg_ring"
+                    style="@android:style/Widget.Material.ProgressBar"
+                    android:layout_width="13dp"
+                    android:layout_height="13dp"
+                    android:layout_marginRight="5dp"
+                    android:indeterminateTint="#FFFFFF"
+                    android:indeterminateTintMode="src_in"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/msg_meta"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textColor="#D1D5DB"
+                    android:textSize="12sp"
+                    android:maxLines="1"
+                    android:ellipsize="end" />
+            </LinearLayout>
+
+            <!-- 状态行：默认 GONE。v1.15.0 起常规状态已并入 msg_meta 同一行 -->
+            <TextView
+                android:id="@+id/msg_status"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="#D1D5DB"
+                android:textSize="12sp"
+                android:layout_marginTop="2dp"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:visibility="gone" />
+
+            <!-- 图片缩略图（照片模式专用），仅图片消息使用 -->
+            <ImageView
+                android:id="@+id/msg_thumb"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:adjustViewBounds="true"
+                android:scaleType="fitCenter"
+                android:visibility="gone" />
+
+            <!-- 卡片内按钮行：仅「接收/拒绝」「取消」这类必须的即时操作 -->
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="6dp">
+
+                <Button
+                    android:id="@+id/msg_b1"
+                    android:layout_width="wrap_content"
+                    android:layout_height="30dp"
+                    android:minWidth="0dp"
+                    android:minHeight="0dp"
+                    android:text="接收"
+                    android:textColor="#FFFFFF"
+                    android:textSize="12sp"
+                    android:background="@drawable/btn_primary"
+                    android:visibility="gone" />
+
+                <Button
+                    android:id="@+id/msg_b2"
+                    android:layout_width="wrap_content"
+                    android:layout_height="30dp"
+                    android:minWidth="0dp"
+                    android:minHeight="0dp"
+                    android:layout_marginLeft="8dp"
+                    android:text="拒绝"
+                    android:textColor="#EF4444"
+                    android:textSize="12sp"
+                    android:background="@drawable/btn_danger"
+                    android:visibility="gone" />
+            </LinearLayout>
+
+            <!-- 兼容旧引用：横条进度条已废弃，保留 id 但归零隐藏 -->
+            <ProgressBar
+                android:id="@+id/msg_bar"
+                style="@android:style/Widget.Material.ProgressBar.Horizontal"
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <!-- 右栏：文件类型图标（微信风圆角矩形+右上折角，尺寸由代码设定 40x52dp） -->
+        <ImageView
+            android:id="@+id/msg_typeicon"
+            android:layout_width="40dp"
+            android:layout_height="52dp"
+            android:layout_marginLeft="14dp"
+            android:layout_gravity="center_vertical"
+            android:scaleType="fitXY" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/msg_time"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:layout_marginLeft="6dp"
+        android:layout_marginBottom="6dp"
+        android:textColor="#9CA3AF"
+        android:textSize="10sp"
+        android:visibility="gone" />
+
+    <View
+        android:layout_width="0dp"
+        android:layout_height="1dp"
+        android:layout_weight="1" />
+</LinearLayout>

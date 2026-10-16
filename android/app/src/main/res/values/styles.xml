@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="AppTheme" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#191B1F</item>
+        <item name="android:colorPrimary">#3B82F6</item>
+        <item name="android:colorPrimaryDark">#15171B</item>
+        <item name="android:colorAccent">#3B82F6</item>
+        <item name="android:statusBarColor">#15171B</item>
+        <item name="android:navigationBarColor">#15171B</item>
+        <item name="android:textColor">#E5E7EB</item>
+        <item name="android:windowLightStatusBar">false</item>
+
+        <!--
+          ★ v1.18.5：文本选择菜单（ActionMode）样式，对齐微信长按文本的观感。
+
+          · actionModeStyle   —— 深灰圆角底板 + 浅色文字
+          · windowActionModeOverlay —— 让菜单**浮在内容之上**而不是把聊天内容
+            整体下压。微信长按文本时那层菜单就是浮层，内容不位移。
+        -->
+        <item name="android:actionModeStyle">@style/FdActionMode</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:actionModeBackground">@drawable/action_mode_bg</item>
+        <item name="android:actionMenuTextColor">#E9EAEC</item>
+    </style>
+
+    <style name="FdActionMode" parent="@android:style/Widget.Material.ActionMode">
+        <item name="android:background">@drawable/action_mode_bg</item>
+    </style>
+</resources>

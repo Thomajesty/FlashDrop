@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:paddingLeft="12dp"
+    android:paddingRight="12dp"
+    android:paddingTop="3dp"
+    android:paddingBottom="3dp">
+
+    <ImageView
+        android:id="@+id/msg_avatar"
+        android:layout_width="28dp"
+        android:layout_height="28dp"
+        android:layout_marginTop="1dp" />
+
+    <!-- v1.12.0：时间从「avatar 与 bubble 之间」移到「气泡右侧」——
+         旧位置会让气泡左边缘随时间显隐漂移，导致接收侧对齐不统一 -->
+    <LinearLayout
+        android:id="@+id/msg_bubble"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:layout_marginLeft="8dp"
+        android:maxWidth="300dp"
+        android:background="@drawable/bubble_in"
+        android:paddingLeft="12dp"
+        android:paddingRight="12dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp">
+
+        <!-- ★ v1.18.12 崩溃修复（用户第 1 条）：改为**顶层类** BdTextView。
+             之前写成 `TextSelectionHelper.BdTextView`（嵌套类）会导致
+             ClassNotFoundException → Error inflating class → 点进任何
+             有历史记录的会话（含离线设备）立即闪退。详见 BdTextView.java。 -->
+        <com.flashdrop.app.BdTextView
+            android:id="@+id/msg_meta"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="#E5E7EB"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/msg_status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="#9CA3AF"
+            android:textSize="11sp"
+            android:visibility="gone" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/msg_time"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:layout_marginLeft="6dp"
+        android:layout_marginBottom="4dp"
+        android:textColor="#9CA3AF"
+        android:textSize="10sp"
+        android:visibility="gone" />
+
+    <View
+        android:layout_width="0dp"
+        android:layout_height="1dp"
+        android:layout_weight="1" />
+</LinearLayout>

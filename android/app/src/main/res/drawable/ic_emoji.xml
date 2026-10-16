@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v1.18.10：输入栏表情按钮图标（笑脸）。
+     与 ic_album / ic_plus 同规格：24 视口、纯白填充，
+     主题色由 MainActivity.tintIcon() 运行时着色。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="32dp" android:height="32dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <!-- 圆脸外轮廓 -->
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M12,2C6.48,2 2,6.48 2,12s4.48,10 10,10 10,-4.48 10,-10S17.52,2 12,2zM12,20c-4.41,0 -8,-3.59 -8,-8s3.59,-8 8,-8 8,3.59 8,8 -3.59,8 -8,8z" />
+    <!-- 左眼 -->
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M8.5,10.5m-1.5,0a1.5,1.5 0,1 1,3 0a1.5,1.5 0,1 1,-3 0" />
+    <!-- 右眼 -->
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M15.5,10.5m-1.5,0a1.5,1.5 0,1 1,3 0a1.5,1.5 0,1 1,-3 0" />
+    <!-- 微笑弧线 -->
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M12,17.5c-2.33,0 -4.31,-1.46 -5.11,-3.5h10.22c-0.8,2.04 -2.78,3.5 -5.11,3.5z" />
+</vector>

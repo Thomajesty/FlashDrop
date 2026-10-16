@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v1.18.12（用户第 3 条）：表情面板打开时，右下角按钮切换成「键盘」图标，
+     点一下收回面板、弹出输入法。fillColor 由 tintIcon() 在运行时按主题着色。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- 键盘外框 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M3,6h18a1,1 0 0 1 1,1v10a1,1 0 0 1 -1,1H3a1,1 0 0 1 -1,-1V7a1,1 0 0 1 1,-1zM4,8v8h16V8H4z" />
+    <!-- 键位：两排小方块 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M5.8,9.2h1.6v1.6H5.8zM8.6,9.2h1.6v1.6H8.6zM11.4,9.2h1.6v1.6h-1.6zM14.2,9.2h1.6v1.6h-1.6zM17,9.2h1.6v1.6H17zM5.8,12h1.6v1.6H5.8zM8.6,12h1.6v1.6H8.6zM11.4,12h1.6v1.6h-1.6zM14.2,12h1.6v1.6h-1.6zM17,12h1.6v1.6H17z" />
+    <!-- 空格键 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M8.4,14.8h7.2v1.5H8.4z" />
+</vector>

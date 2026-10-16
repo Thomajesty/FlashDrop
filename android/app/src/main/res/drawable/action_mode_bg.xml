@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ★ v1.18.5：文本选择菜单（ActionMode）的浮动底板。
+
+  对齐微信长按文本时那层菜单的观感：
+    · 中灰 #4B4F55（与 popup 菜单 msg_popup_bg 同色系，两处视觉统一）
+    · 圆角 10dp
+    · 轻微投影留给系统（windowActionModeOverlay 下由系统绘制）
+
+  背景刻意用**不透明**色：ActionMode 容器的合成方式与 popup 不同，
+  带 alpha 的底色在部分 ROM 上会叠加出脏色。
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#4B4F55" />
+    <corners android:radius="10dp" />
+</shape>

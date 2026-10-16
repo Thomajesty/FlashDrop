@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:paddingLeft="12dp"
+    android:paddingRight="12dp"
+    android:paddingTop="3dp"
+    android:paddingBottom="3dp">
+
+    <!-- v1.12.0：时间从「行首」移到「气泡左侧」，与 in 布局镜像对称——
+         时间贴气泡外侧，发送侧右对齐位置恒定 -->
+    <View
+        android:layout_width="0dp"
+        android:layout_height="1dp"
+        android:layout_weight="1" />
+
+    <TextView
+        android:id="@+id/msg_time"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:layout_marginRight="6dp"
+        android:layout_marginBottom="4dp"
+        android:textColor="#9CA3AF"
+        android:textSize="10sp"
+        android:visibility="gone" />
+
+    <LinearLayout
+        android:id="@+id/msg_bubble"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:layout_marginRight="8dp"
+        android:maxWidth="300dp"
+        android:background="@drawable/bubble_out"
+        android:paddingLeft="12dp"
+        android:paddingRight="12dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp">
+
+        <!-- ★ v1.18.12 崩溃修复（用户第 1 条：「点击离线设备闪退」）：
+             改为**顶层类** BdTextView。嵌套类在 dex 里叫
+             `TextSelectionHelper$BdTextView`，而 XML 元素名既不允许裸 `$`
+             （aapt2: not well-formed）也不允许 `&#36;`；LayoutInflater 的
+             Class.forName 又不会把点号改写成 `$` → 必然
+             ClassNotFoundException → Error inflating class → 点进任何
+             有历史记录的会话（含离线设备）都闪退。详见 BdTextView.java。 -->
+        <com.flashdrop.app.BdTextView
+            android:id="@+id/msg_meta"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/msg_status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="right"
+            android:textColor="#D1E7FF"
+            android:textSize="11sp"
+            android:visibility="gone" />
+
+        <!-- 操作按钮行（仅 pending 状态的"取消"会显示） -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="right"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/msg_b1"
+                android:layout_width="wrap_content"
+                android:layout_height="30dp"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:paddingLeft="14dp"
+                android:paddingRight="14dp"
+                android:textSize="12sp"
+                android:visibility="gone" />
+
+            <Button
+                android:id="@+id/msg_b2"
+                android:layout_width="wrap_content"
+                android:layout_height="30dp"
+                android:layout_marginLeft="8dp"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:paddingLeft="14dp"
+                android:paddingRight="14dp"
+                android:textSize="12sp"
+                android:visibility="gone" />
+        </LinearLayout>
+    </LinearLayout>
+    <ImageView
+        android:id="@+id/msg_avatar"
+        android:layout_width="28dp"
+        android:layout_height="28dp"
+        android:layout_marginTop="1dp" />
+
+</LinearLayout>

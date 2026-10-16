@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.flashdrop.app"
+    android:versionCode="58"
+    android:versionName="1.18.29">
+
+    <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34" />
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <!-- ★ v1.15.0：Android 8.0+ 安装未知来源 APK 必须声明此权限，
+         否则 PackageInstaller 只会打开一个无动作界面（用户反馈的"不执行下一步"） -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!-- ★ v1.16.0：息屏 / 锁屏时接收文件必须持有 WakeLock。
+         **不声明此权限时 PowerManager.newWakeLock 会抛 SecurityException**，
+         息屏在线修复（PARTIAL_WAKE_LOCK）将完全失效 —— 这是本轮
+         "手机端锁屏时不能接收到文件" 修复的必要前置条件。 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- WifiLock(WIFI_MODE_FULL_HIGH_PERF) 同样需要绑定 WIFI_SERVICE，
+         该权限为 normal 级别，声明即可（部分 ROM 检查更严格） -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+
+    <!-- ★ v1.15.0：内置文件预览器需要能被 queried，否则 Android 11+ 的
+         包可见性限制会让 resolveActivity 一律返回 null -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="*/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="*/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.INSTALL_PACKAGE" />
+        </intent>
+    </queries>
+
+    <application
+        android:name=".FlashApp"
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:allowBackup="true"
+        android:usesCleartextTraffic="true"
+        android:theme="@style/AppTheme">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- 系统分享入口：微信/相册/文件管理器 分享 → 闪传 -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+
+        <activity android:name=".SettingsActivity" android:exported="false" />
+
+        <!-- v1.15.0：内置文件预览器（txt / pdf / word / excel / ppt 等）；
+             顶栏左上角「⋯」可另存 / 转发 / 用其它应用打开 -->
+        <activity
+            android:name=".FdPreviewActivity"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:configChanges="keyboardHidden|orientation|screenSize"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- v1.11.0：全屏图片查看器（捏合缩放 / 双击放大 / 下拉关闭 / 长按保存删除） -->
+        <activity
+            android:name=".ImageViewerActivity"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
+
+        <service
+            android:name=".NodeService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <provider
+            android:name=".FdFileProvider"
+            android:authorities="com.flashdrop.app.files"
+            android:exported="true"
+            android:grantUriPermissions="true" />
+    </application>
+</manifest>

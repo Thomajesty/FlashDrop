@@ -1,0 +1,530 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#191B1F">
+
+    <!-- 顶栏 -->
+    <LinearLayout
+        android:id="@+id/top_bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:background="#1F2126"
+        android:gravity="center_vertical"
+        android:paddingLeft="14dp"
+        android:paddingRight="10dp"
+        android:paddingTop="10dp"
+        android:paddingBottom="8dp">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/app_title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="⚡ 闪传"
+                android:textColor="#E5E7EB"
+                android:textSize="17sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/self_label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="#9CA3AF"
+                android:textSize="11sp"
+                android:singleLine="true"
+                android:ellipsize="end" />
+        </LinearLayout>
+
+        <ImageView
+            android:id="@+id/btn_settings"
+            android:layout_width="22dp"
+            android:layout_height="22dp"
+            android:layout_marginLeft="8dp"
+            android:src="@drawable/ic_gear"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:contentDescription="设置" />
+    </LinearLayout>
+
+    <!-- 目标选择行：设备态 / 搜索态**同一行原地形变**（★ v1.18.25 重构）。
+         用户反馈：切换时"上半部分由于模块大小不一样跳动"。
+         四根锚点，保证切换时只有"该动的动"：
+         ① 行高固定 41dp（padding 2 + 32 + 7），所有子控件统一 32dp
+            → 两种模式行高完全一致，不再上下跳动；
+         ② 设备选择器（Spinner）与搜索框（EditText）**叠放在同一个 weight=1 的
+            FrameLayout 槽位**（device_search_slot）里 → 谁显示谁隐藏都不改变
+            行内其它控件的布局，槽位宽度恒定；
+         ③ 「删除」按钮在搜索态**原地形变**为「搜全局」（文字/字色/宽度平滑过渡），
+            不是隐藏后从别处冒出一个新按钮；
+         ④ 🔍搜索 恒为本行最后一个子控件且无 weight → 右边缘被行 padding 锚定，
+            任何模式下位置都不跳动。 -->
+    <LinearLayout
+        android:id="@+id/sel_bar"
+        android:layout_width="match_parent"
+        android:layout_height="41dp"
+        android:orientation="horizontal"
+        android:background="#1F2126"
+        android:gravity="center_vertical"
+        android:paddingLeft="10dp"
+        android:paddingRight="10dp"
+        android:paddingTop="2dp"
+        android:paddingBottom="7dp">
+
+        <!-- 设备选择器 / 搜索框 共用槽位：weight=1 撑满左侧剩余空间，
+             两个子视图 MATCH_PARENT 叠放，显隐互换不影响行内布局 -->
+        <FrameLayout
+            android:id="@+id/device_search_slot"
+            android:layout_width="0dp"
+            android:layout_height="32dp"
+            android:layout_weight="1"
+            android:layout_marginRight="6dp">
+
+            <!-- ★ v1.17.0：背景与弹层背景都改为**代码按主题设置**
+                 （applyTheme() 里给 targetSpinner 重设圆角背景 + popupBackground）。
+                 此前 XML 写死 background=@drawable/btn_small (#2E3138) 与
+                 popupBackground=#26292F，浅色主题下设备选择框一直是黑的 ——
+                 用户实测「浅色主题下设备选择框还是黑的」就是这个原因。 -->
+            <Spinner
+                android:id="@+id/target_spinner"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+
+            <!-- ★ v1.18.25：高度跟随槽位（32dp，与其它按钮统一）。
+                 v1.18.22 这里是 34dp，是"切换时行高跳动"的直接原因之一。 -->
+            <EditText
+                android:id="@+id/search_input"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="@drawable/edit_dark"
+                android:paddingLeft="10dp"
+                android:paddingRight="10dp"
+                android:hint="搜索当前设备"
+                android:textColor="#E5E7EB"
+                android:textColorHint="#6B7280"
+                android:textSize="13sp"
+                android:singleLine="true"
+                android:imeOptions="actionSearch"
+                android:visibility="gone" />
+        </FrameLayout>
+
+        <TextView
+            android:id="@+id/online_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginRight="6dp"
+            android:maxWidth="52dp"
+            android:ellipsize="end"
+            android:singleLine="true"
+            android:textColor="#9CA3AF"
+            android:textSize="11sp" />
+
+        <!-- v1.13.0：移除顶栏「待发送 N」按钮（0dp 占位，保留 id 兼容）。 -->
+        <Button
+            android:id="@+id/btn_pending"
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:visibility="gone" />
+
+        <!-- ★ v1.18.25：「删除」与「搜全局」是**同一个按钮**的两种身份：
+             设备态 = 删除（警示红）；搜索态 = 搜全局（正文色）。
+             切换时宽度平滑增长——槽位让出空间，按钮左缘随之左移（向左延长），
+             而不是隐藏后从别处冒出一个新按钮。
+
+             ★ v1.18.26：必须 `singleLine` + `maxLines=1` ——
+             删字 2 个字、搜全局 3 个字，形变中途宽度还没长到位时
+             「搜全局」会**折成两行**（按钮撑高、整行跟着抖），
+             用户实测就是「从一排过度到两排再过度到一排」。
+             锁死单行后按钮高度恒为 32dp，行高全程不变。 -->
+        <Button
+            android:id="@+id/btn_delete"
+            android:layout_width="wrap_content"
+            android:layout_height="32dp"
+            android:layout_marginLeft="6dp"
+            android:minWidth="0dp"
+            android:paddingLeft="12dp"
+            android:paddingRight="12dp"
+            android:text="删除"
+            android:textColor="#EF4444"
+            android:textSize="12sp"
+            android:singleLine="true"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:background="@drawable/btn_small" />
+
+        <!-- ★ v1.18.25：🔍搜索 恒为行末最后一个子控件（无 weight）→ 位置锚定。
+             设备态点击 → 本行形变为搜索态；搜索态：有关键词=搜当前设备，
+             空关键词=收起还原。 -->
+        <LinearLayout
+            android:id="@+id/btn_rescan"
+            android:layout_width="wrap_content"
+            android:layout_height="32dp"
+            android:layout_marginLeft="6dp"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:paddingLeft="10dp"
+            android:paddingRight="10dp"
+            android:background="@drawable/btn_small"
+            android:clickable="true"
+            android:focusable="true">
+
+            <ImageView
+                android:id="@+id/ic_search_btn"
+                android:layout_width="16dp"
+                android:layout_height="16dp"
+                android:src="@drawable/ic_search"
+                android:tint="#E5E7EB"
+                android:contentDescription="搜索" />
+
+            <TextView
+                android:id="@+id/tv_search_label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="4dp"
+                android:text="搜索"
+                android:textColor="#E5E7EB"
+                android:textSize="12sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+
+    <!-- 多选操作栏（默认隐藏） -->
+    <LinearLayout
+        android:id="@+id/action_bar"
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:orientation="horizontal"
+        android:background="#1F2126"
+        android:gravity="center_vertical"
+        android:paddingLeft="14dp"
+        android:paddingRight="10dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/select_count"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="已选择 0 条"
+            android:textColor="#3B82F6"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+
+        <Button
+            android:id="@+id/btn_sel_all"
+            android:layout_width="wrap_content"
+            android:layout_height="30dp"
+            android:minWidth="60dp"
+            android:text="全选"
+            android:textColor="#E5E7EB"
+            android:textSize="12sp"
+            android:background="@drawable/btn_small" />
+
+        <Button
+            android:id="@+id/btn_sel_del"
+            android:layout_width="wrap_content"
+            android:layout_height="30dp"
+            android:minWidth="60dp"
+            android:layout_marginLeft="8dp"
+            android:text="删除"
+            android:textColor="#EF4444"
+            android:textSize="12sp"
+            android:background="@drawable/btn_small" />
+
+        <Button
+            android:id="@+id/btn_sel_cancel"
+            android:layout_width="wrap_content"
+            android:layout_height="30dp"
+            android:minWidth="60dp"
+            android:layout_marginLeft="8dp"
+            android:text="取消"
+            android:textColor="#E5E7EB"
+            android:textSize="12sp"
+            android:background="@drawable/btn_small" />
+    </LinearLayout>
+
+    <!-- 聊天区 -->
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <TextView
+            android:id="@+id/empty_view"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:gravity="center"
+            android:text="暂无消息\n同一 Wi-Fi 下打开电脑端闪传即可互传\n\n点 ＋ 发送图片或文件"
+            android:textColor="#9CA3AF"
+            android:textSize="13sp"
+            android:lineSpacingExtra="4dp" />
+
+        <ListView
+            android:id="@+id/chat_list"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:divider="@null"
+            android:dividerHeight="0dp"
+            android:cacheColorHint="#00000000"
+            android:stackFromBottom="true"
+            android:transcriptMode="normal"
+            android:paddingTop="4dp"
+            android:paddingBottom="4dp"
+            android:clipToPadding="false" />
+
+        <!-- ★ v1.18.21：搜索结果列表（会话界面内联，点击跳转到该记录） -->
+        <ListView
+            android:id="@+id/search_result_list"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:divider="#2E3138"
+            android:dividerHeight="1dp"
+            android:cacheColorHint="#00000000"
+            android:visibility="gone" />
+    </FrameLayout>
+
+    <!-- 底部功能面板（＋弹出，圆角卡片，占输入法位置） -->
+    <LinearLayout
+        android:id="@+id/panel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:background="#1F2126"
+        android:paddingLeft="10dp"
+        android:paddingRight="10dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="14dp"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:id="@+id/panel_album"
+            android:layout_width="0dp"
+            android:layout_height="72dp"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:layout_marginRight="10dp"
+            android:background="@drawable/panel_card"
+            android:clickable="true"
+            android:focusable="true">
+
+            <ImageView
+                android:id="@+id/ic_album"
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:src="@drawable/ic_album" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="5dp"
+                android:text="相册"
+                android:textColor="#E5E7EB"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/panel_camera"
+            android:layout_width="0dp"
+            android:layout_height="72dp"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:layout_marginRight="10dp"
+            android:background="@drawable/panel_card"
+            android:clickable="true"
+            android:focusable="true">
+
+            <ImageView
+                android:id="@+id/ic_camera"
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:src="@drawable/ic_camera" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="5dp"
+                android:text="拍照"
+                android:textColor="#E5E7EB"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/panel_file"
+            android:layout_width="0dp"
+            android:layout_height="72dp"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="@drawable/panel_card"
+            android:clickable="true"
+            android:focusable="true">
+
+            <ImageView
+                android:id="@+id/ic_file"
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:src="@drawable/ic_file" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="5dp"
+                android:text="文件"
+                android:textColor="#E5E7EB"
+                android:textSize="12sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- 输入栏（豆包式胶囊）：相册快捷 | 输入框 | 表情 | 展开键(右上) + ＋/发送(右下固定) -->
+    <!-- ★ v1.17.0：补上 id=input_wrap。
+         此前这个外层 FrameLayout 没有 id，applyTheme() 无法给它上色，
+         于是它一直保留 XML 里写死的深色 #1F2126 —— 用户实测浅色主题下
+         "底部消息栏还有局部黑色未修正"。 -->
+    <FrameLayout
+        android:id="@+id/input_wrap"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#1F2126"
+        android:paddingLeft="10dp"
+        android:paddingRight="10dp"
+        android:paddingTop="5dp"
+        android:paddingBottom="8dp">
+
+        <LinearLayout
+            android:id="@+id/input_bar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:minHeight="46dp"
+            android:background="@drawable/input_pill"
+            android:gravity="bottom"
+            android:paddingLeft="12dp"
+            android:paddingRight="8dp"
+            android:paddingTop="5dp"
+            android:paddingBottom="5dp">
+
+            <ImageView
+                android:id="@+id/btn_camera"
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:layout_marginRight="10dp"
+                android:layout_marginBottom="6dp"
+                android:src="@drawable/ic_album"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="发送图片" />
+
+            <EditText
+                android:id="@+id/input"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:minHeight="36dp"
+                android:maxHeight="200dp"
+                android:gravity="bottom"
+                android:hint="发消息…"
+                android:textColorHint="#9CA3AF"
+                android:textColor="#E5E7EB"
+                android:textSize="15sp"
+                android:background="@null"
+                android:padding="4dp" />
+
+            <!-- 右侧列：占满行高，展开键随文字升到右上，＋/发送固定右下 -->
+            <FrameLayout
+                android:layout_width="wrap_content"
+                android:layout_height="match_parent">
+
+                <ImageView
+                    android:id="@+id/btn_expand"
+                    android:layout_width="22dp"
+                    android:layout_height="22dp"
+                    android:layout_gravity="top|right"
+                    android:layout_marginTop="4dp"
+                    android:src="@drawable/ic_expand"
+                    android:visibility="gone"
+                    android:background="?android:attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="全屏输入" />
+
+                <!-- ★ v1.18.12（用户第 3 条）：「＋」**左侧**的表情按钮。
+                     之前放在输入框左边（最左侧），用户要求改到和微信一样
+                     贴着「＋」—— 即输入框右侧、＋ 左边。
+                     图标本身会在「表情」/「键盘」之间切换（见 applyTheme 与
+                     toggleEmojiPanel），所以这里只放位置，图由代码设。 -->
+                <ImageView
+                    android:id="@+id/btn_emoji"
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:layout_gravity="bottom|right"
+                    android:layout_marginRight="46dp"
+                    android:layout_marginBottom="6dp"
+                    android:src="@drawable/ic_emoji"
+                    android:background="?android:attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="表情" />
+
+                <FrameLayout
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:layout_gravity="bottom|right">
+
+                    <FrameLayout
+                        android:id="@+id/btn_plus"
+                        android:layout_width="36dp"
+                        android:layout_height="36dp"
+                        android:background="@drawable/plus_circle"
+                        android:clickable="true"
+                        android:focusable="true">
+
+                        <ImageView
+                            android:id="@+id/ic_plus"
+                            android:layout_width="22dp"
+                            android:layout_height="22dp"
+                            android:layout_gravity="center"
+                            android:src="@drawable/ic_plus" />
+                    </FrameLayout>
+
+                    <FrameLayout
+                        android:id="@+id/btn_send"
+                        android:layout_width="36dp"
+                        android:layout_height="36dp"
+                        android:background="@drawable/send_circle"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:visibility="gone">
+
+                        <ImageView
+                            android:id="@+id/ic_send"
+                            android:layout_width="20dp"
+                            android:layout_height="20dp"
+                            android:layout_gravity="center"
+                            android:src="@drawable/ic_arrow_up" />
+                    </FrameLayout>
+                </FrameLayout>
+            </FrameLayout>
+        </LinearLayout>
+    </FrameLayout>
+
+    <!-- ★ v1.18.12（用户第 3 条）：表情面板容器。
+         用户要求「表情包显示区域为底部键盘区域」——
+         因此从**输入栏上方**移到输入栏**下方**（即原来输入法所在的位置），
+         打开时先收起 IME，面板顶上来占据键盘区，视觉与微信一致。
+         默认隐藏，内容由 EmojiPicker 在首次点击表情按钮时注入。 -->
+    <FrameLayout
+        android:id="@+id/emoji_panel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#1F2126"
+        android:visibility="gone" />
+</LinearLayout>
