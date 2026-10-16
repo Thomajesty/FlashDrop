@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
                                QToolButton, QStackedWidget, QInputDialog)
 
 from .. import util
+from .. import updater
 from ..node import FlashNode
 from .theme import (build_qss, DARK, LIGHT, ACCENT, ACCENT2, GREEN, RED,
                     resolve_theme, bubble_scheme, BUBBLE_SCHEMES)
@@ -224,6 +225,85 @@ class AddDeviceDialog(QDialog):
         return host, port
 
 
+# ---------- v1.18.30：软件更新（数据源 GitHub Releases，双端对称） ----------
+
+class UpdateChecker(QObject):
+    """后台检查最新 Release；结果经信号送回主线程。
+
+    工作线程不能直接碰 UI，也不能在工作线程里调 QTimer.singleShot
+    （会被静默丢弃）——统一走 Signal（跨线程 emit 安全）。
+    """
+    finished = Signal(object)          # dict | None
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+    def check(self):
+        def work():
+            try:
+                info = updater.fetch_latest()
+            except Exception:
+                info = None
+            self.finished.emit(info)
+        threading.Thread(target=work, daemon=True,
+                         name="fd-update-check").start()
+
+
+class UpdateDialog(QDialog):
+    """发现新版本：版本对比 + 更新日志 + 下载 / 跳过此版本。"""
+
+    def __init__(self, cfg, current, info, parent=None):
+        super().__init__(parent)
+        self.cfg = cfg
+        self.info = info
+        self.version = info.get("version", "")
+        self.setWindowTitle("发现新版本")
+        self.setMinimumWidth(500)
+        v = QVBoxLayout(self)
+        v.setSpacing(10)
+
+        title = QLabel(f"<b>闪传 FlashDrop</b>　v{current}　→　"
+                       f"<span style='color:{ACCENT}'>v{self.version}</span>")
+        title.setStyleSheet("font-size:15px;")
+        v.addWidget(title)
+
+        notes = QPlainTextEdit()
+        notes.setPlainText((info.get("notes") or "（此版本没有更新说明）").strip()[:4000])
+        notes.setReadOnly(True)
+        notes.setMinimumHeight(180)
+        v.addWidget(notes, 1)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        exe = updater.asset_for(info, ".exe")
+        apk = updater.asset_for(info, ".apk")
+        if exe:
+            b = QPushButton("下载 Windows 版")
+            b.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(exe["url"])))
+            row.addWidget(b)
+        if apk:
+            b = QPushButton("下载 Android 版")
+            b.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(apk["url"])))
+            row.addWidget(b)
+        b = QPushButton("打开下载页")
+        b.clicked.connect(lambda: QDesktopServices.openUrl(
+            QUrl(info.get("html_url") or updater.RELEASES_PAGE)))
+        row.addWidget(b)
+        row.addStretch(1)
+        b = QPushButton("跳过此版本")
+        b.clicked.connect(self._skip)
+        row.addWidget(b)
+        b = QPushButton("稍后再说")
+        b.clicked.connect(self.reject)
+        b.setDefault(True)
+        row.addWidget(b)
+        v.addLayout(row)
+
+    def _skip(self):
+        updater.mark_version_skipped(self.cfg, self.version)
+        self.reject()
+
+
 class SettingsDialog(QDialog):
     def __init__(self, cfg, parent=None):
         super().__init__(parent)
@@ -357,6 +437,17 @@ class SettingsDialog(QDialog):
         about.setTextInteractionFlags(Qt.TextBrowserInteraction)
         about.setAlignment(Qt.AlignTop)
         v4.addWidget(about)
+
+        # ★ v1.18.30：检查更新（GitHub Releases，与安卓端同源）
+        upd_row = QHBoxLayout()
+        upd_row.setSpacing(8)
+        self.btn_check_update = QPushButton("检查更新")
+        self.btn_check_update.clicked.connect(self._check_update)
+        upd_row.addWidget(self.btn_check_update)
+        self.upd_status = QLabel("更新与安装包托管在 GitHub Releases")
+        self.upd_status.setStyleSheet("color:#6b7280;font-size:12px;")
+        upd_row.addWidget(self.upd_status, 1)
+        v4.addLayout(upd_row)
 
         # v1.12.0：赞助支持 —— 微信 / 支付宝 收款码卡片（按各自品牌配色）
         sponsor_lbl = QLabel("<b>赞助支持</b>　·　如果闪传对你有帮助，请作者喝杯咖啡 ☕")
@@ -507,6 +598,29 @@ class SettingsDialog(QDialog):
             os.makedirs(self.cfg["cache_dir"], exist_ok=True)
         except Exception:
             pass
+
+    # ---------- v1.18.30：检查更新 ----------
+
+    def _check_update(self):
+        from .. import __version__
+        self.btn_check_update.setEnabled(False)
+        self.upd_status.setText("正在检查…")
+        self._upd_checker = UpdateChecker(self)   # 持有引用防 GC
+        self._upd_checker.finished.connect(
+            lambda info: self._on_update_info(info, __version__))
+        self._upd_checker.check()
+
+    def _on_update_info(self, info, current):
+        self.btn_check_update.setEnabled(True)
+        if info is None:
+            # 国内直连 GitHub 常超时/被限流：明确告知，不静默
+            self.upd_status.setText("检查失败：网络不可达或 GitHub 限流，请稍后重试")
+            return
+        if not updater.is_newer(info.get("version", ""), current):
+            self.upd_status.setText(f"当前已是最新版本 v{current}")
+            return
+        self.upd_status.setText("")
+        UpdateDialog(self.cfg, current, info, self).exec()
 
 
 class PendingWindow(QDialog):
@@ -919,6 +1033,34 @@ class MainWindow(QMainWindow):
         self._pending_load()
         # 自检：启动 20 秒仍无任何设备 → 提示防火墙/代理
         QTimer.singleShot(20000, self._conn_selfcheck)
+        # ★ v1.18.30：启动 5 秒后静默检查更新（每天最多一次；有新版本才弹窗）。
+        #   国内直连 GitHub 偏慢，放启动任务之后，且 8s 超时失败即静默跳过。
+        QTimer.singleShot(5000, self._auto_check_update)
+
+    def _auto_check_update(self):
+        try:
+            if not updater.auto_check_allowed(self.cfg):
+                return
+        except Exception:
+            return
+        updater.mark_auto_checked(self.cfg)
+
+        def _done(info):
+            from .. import __version__
+            if not info or not updater.is_newer(info.get("version", ""), __version__):
+                return
+            try:
+                if updater.version_skipped(self.cfg, info.get("version", "")):
+                    return
+            except Exception:
+                pass
+            dlg = UpdateDialog(self.cfg, __version__, info, self)
+            dlg.exec()
+
+        c = UpdateChecker(self)     # 持有引用防 GC
+        c.finished.connect(_done)
+        self._upd_checker = c
+        c.check()
 
     def _conn_selfcheck(self):
         if self.peers or not self.isVisible():

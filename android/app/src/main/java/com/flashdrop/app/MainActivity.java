@@ -532,6 +532,9 @@ public class MainActivity extends Activity {
         //   覆盖"界面开着、但 peers 事件之后一直没再变化"的场景 ——
         //   那种情况下光靠 peers 事件不会再触发补发。
         FlashApp.get().schedulePendingRetry();
+        // ★ v1.18.30：启动静默检查更新（每天一次；有新版本才弹窗，
+        //   失败静默不打扰）。与设置页「检查更新」同一数据源。
+        maybeCheckUpdate();
         // 设置里可能改了主题/名称/气泡配色：任一变化都立即刷新
         FdTheme t = FdTheme.resolve(this);
         if (theme == null || t.dark != theme.dark
@@ -593,6 +596,26 @@ public class MainActivity extends Activity {
             lastBgReloadCount = bgCount;
             loadHistory();
         }
+    }
+
+    /** ★ v1.18.30：启动静默检查更新（每天一次；有新版本才弹窗，失败静默不打扰）。
+     *  与设置页「检查更新」共用 UpdateChecker 数据源与对话框。 */
+    private void maybeCheckUpdate() {
+        try {
+            Prefs prefs = FlashApp.get().prefs();
+            String today = new java.text.SimpleDateFormat("yyyy-MM-dd",
+                    java.util.Locale.US).format(new java.util.Date());
+            if (today.equals(prefs.lastUpdateCheck())) return;
+            // 查过就记：失败也不在今天重试（国内访问 GitHub 慢，避免每次回前台都等 8s）
+            prefs.setLastUpdateCheck(today);
+            UpdateChecker.check(info -> {
+                if (info == null) return;      // 静默失败不打扰
+                String ver = info.optString("version", "");
+                if (!UpdateChecker.isNewer(ver, FdUtil.APP_VERSION)) return;
+                if (ver.equals(FlashApp.get().prefs().skippedVersion())) return;
+                UpdateChecker.showUpdateDialog(this, info);
+            });
+        } catch (Throwable ignored) {}
     }
 
     @Override

@@ -87,6 +87,14 @@ public class Prefs {
     public boolean encrypt() { return sp.getBoolean("encrypt", false); }
     public void setEncrypt(boolean v) { sp.edit().putBoolean("encrypt", v).apply(); }
 
+    /** ★ v1.18.30：软件更新（GitHub Releases，与 Windows 端对称）。
+     *  last_update_check：上次启动静默检查日期（YYYY-MM-DD），每天最多一次；
+     *  skipped_version：用户选择跳过此版本的版本号。 */
+    public String lastUpdateCheck() { return sp.getString("last_update_check", ""); }
+    public void setLastUpdateCheck(String v) { sp.edit().putString("last_update_check", v).apply(); }
+    public String skippedVersion() { return sp.getString("skipped_version", ""); }
+    public void setSkippedVersion(String v) { sp.edit().putString("skipped_version", v).apply(); }
+
     /** 待发文件队列（JSON），目标离线时保存，上线自动发送 */
     public String pendingSends() { return sp.getString("pending_sends", "[]"); }
     public void setPendingSends(String v) { sp.edit().putString("pending_sends", v).apply(); }

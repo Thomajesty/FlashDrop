@@ -438,6 +438,20 @@ public class SettingsActivity extends Activity {
             }
         });
 
+        // ★ v1.18.30：检查更新（GitHub Releases，与 Windows 端同源）
+        final Button btnUpdate = new Button(this);
+        btnUpdate.setText("检查更新");
+        btnUpdate.setTextColor(theme.accent);
+        btnUpdate.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        btnUpdate.setAllCaps(false);
+        btnUpdate.setBackground(theme.round(theme.card, 10, this));
+        btnUpdate.setPadding(dp(14), dp(10), dp(14), dp(10));
+        LinearLayout.LayoutParams ulp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        ulp.topMargin = dp(10);
+        root.addView(btnUpdate, ulp);
+        btnUpdate.setOnClickListener(v -> onCheckUpdate(btnUpdate));
+
         Button save = new Button(this);
         save.setText("保存设置");
         save.setTextColor(0xFFFFFFFF);
@@ -664,6 +678,32 @@ public class SettingsActivity extends Activity {
         }
     }
 
+
+    // ---------- ★ v1.18.30：检查更新（GitHub Releases） ----------
+
+    /** 手动检查：失败明确提示（不静默），有新版本弹更新对话框。 */
+    private void onCheckUpdate(Button btn) {
+        btn.setEnabled(false);
+        btn.setText("正在检查…");
+        UpdateChecker.check(info -> {
+            btn.setEnabled(true);
+            btn.setText("检查更新");
+            if (info == null) {
+                // 国内直连 GitHub 常超时/被限流：明确告知，不静默吞掉
+                Toast.makeText(this,
+                        "检查失败：网络不可达或 GitHub 限流，请稍后重试",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+            String ver = info.optString("version", "");
+            if (!UpdateChecker.isNewer(ver, FdUtil.APP_VERSION)) {
+                FdDialog.info(this, "检查更新",
+                        "当前已是最新版本 v" + FdUtil.APP_VERSION, "知道了", null);
+                return;
+            }
+            UpdateChecker.showUpdateDialog(this, info);
+        });
+    }
 
     private void onSave() {
         Prefs prefs = FlashApp.get().prefs();

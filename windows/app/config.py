@@ -74,6 +74,11 @@ DEFAULTS = {
     # 设备身份合并（跨版本）时由 node 迁移，删除设备时一并清除。
     "peer_aliases": {},
     "history_limit": 500,
+    # ★ v1.18.30：软件更新（GitHub Releases）
+    # last_update_check：上次启动静默检查日期（YYYY-MM-DD），每天最多一次
+    # skipped_version：用户点「跳过此版本」的版本号
+    "last_update_check": "",
+    "skipped_version": "",
 }
 
 
