@@ -132,3 +132,15 @@ for t in windows/tests/verify_v*.py; do "$PY" "$t"; done
 ## License
 
 本项目为个人作品，源码仅供学习交流。
+
+## 支持作者
+
+闪传完全免费，没有广告、没有任何功能限制和付费解锁。如果它帮你省下了插 U 盘、登微信传文件的麻烦，
+可以扫码请我喝杯咖啡 —— 你的支持是我持续维护下去的动力。
+
+<picture>
+  <source srcset="https://cdn.jsdelivr.net/gh/Thomajesty/FlashDrop@main/windows/assets/support-qrcodes.png"
+          type="image/png">
+  <img src="https://raw.githubusercontent.com/Thomajesty/FlashDrop/main/windows/assets/support-qrcodes.png"
+       alt="微信 / 支付宝 收款码" width="360">
+</picture>
