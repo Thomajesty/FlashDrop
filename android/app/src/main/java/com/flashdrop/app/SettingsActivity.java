@@ -221,6 +221,69 @@ public class SettingsActivity extends Activity {
                 "复制路径", "关闭", () -> copySavePath(root), null, false);
     }
 
+    // ---------- ★ v1.18.31：已删除的设备（屏蔽名单，可恢复） ----------
+
+    /** 刷新设置页入口文案（数量变化即时反映） */
+    private void refreshBlockedBtn(Button b) {
+        if (b == null) return;
+        int n = 0;
+        try { n = FlashApp.get().prefs().blockedPeers().length(); }
+        catch (Throwable ignored) {}
+        b.setText(n == 0 ? "已删除的设备（暂无）" : "已删除的设备（" + n + "）· 点击恢复");
+    }
+
+    /**
+     * 已删除的设备列表 → 点击某台 = 解除屏蔽。
+     *
+     * 删除会话时设备会进 blocked_peers（节点层拒连 + UI 层过滤），
+     * 这里提供唯一的恢复入口，避免"误删一次就永远加不回来"。
+     */
+    private void showBlockedDevices(final Button btn) {
+        org.json.JSONArray arr;
+        try { arr = FlashApp.get().prefs().blockedPeers(); }
+        catch (Throwable t) { arr = new org.json.JSONArray(); }
+        if (arr.length() == 0) {
+            FdDialog.info(this, "已删除的设备",
+                    "暂无已删除的设备。\n\n在设备列表长按某台设备 → 删除会话，\n"
+                            + "删掉的设备会进这里，误删后可在这里恢复。",
+                    "知道了", null);
+            return;
+        }
+        final java.util.List<String> ids = new ArrayList<>();
+        java.util.List<String> rows = new ArrayList<>();
+        for (int i = 0; i < arr.length(); i++) {
+            org.json.JSONObject o = arr.optJSONObject(i);
+            if (o == null) continue;
+            String id = o.optString("id", "");
+            if (id.isEmpty()) continue;
+            String nm = o.optString("name", "");
+            String show = (nm == null || nm.isEmpty()) ? id : nm;
+            ids.add(id);
+            rows.add(show + "（" + id.substring(0, Math.min(8, id.length())) + "）");
+        }
+        if (ids.isEmpty()) {
+            FdDialog.info(this, "已删除的设备", "暂无已删除的设备。", "知道了", null);
+            return;
+        }
+        FdDialog.list(this, "已删除的设备", "点击某台设备解除屏蔽，重新出现在设备列表",
+                rows, which -> {
+                    if (which < 0 || which >= ids.size()) return;
+                    final String id = ids.get(which);
+                    final String show2 = rows.get(which);
+                    FdDialog.confirm(this, "恢复设备",
+                            "解除对「" + show2 + "」的屏蔽吗？\n\n"
+                                    + "恢复后该设备会重新出现在设备列表，也能重新收到它的消息。\n"
+                                    + "此前的聊天记录已随删除清掉，不会恢复。",
+                            "恢复", () -> {
+                                try { FlashApp.get().prefs().unblockPeer(id); }
+                                catch (Throwable ignored) {}
+                                refreshBlockedBtn(btn);
+                                Toast.makeText(this, "已恢复「" + show2 + "」",
+                                        Toast.LENGTH_SHORT).show();
+                            });
+                });
+    }
+
     /** 把接收目录的绝对路径复制到剪贴板，供文件管理器地址栏粘贴 */
     private void copySavePath(String rootDesc) {
         String abs = android.os.Environment.getExternalStoragePublicDirectory(
@@ -399,6 +462,21 @@ public class SettingsActivity extends Activity {
         openDir.setClickable(true);
         openDir.setOnClickListener(v -> showSaveLocation());
         root.addView(openDir);
+
+        // ★ v1.18.31：已删除的设备（删除会话时进的屏蔽名单，可恢复）
+        root.addView(label("已删除的设备 · 删除会话后会同时屏蔽该设备，不再出现在列表，也不再收到它的消息"));
+        final Button btnBlocked = new Button(this);
+        btnBlocked.setAllCaps(false);
+        btnBlocked.setTextColor(theme.text);
+        btnBlocked.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        btnBlocked.setBackground(theme.round(theme.card, 10, this));
+        btnBlocked.setPadding(dp(14), dp(10), dp(14), dp(10));
+        LinearLayout.LayoutParams bklp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        bklp.topMargin = dp(2);
+        root.addView(btnBlocked, bklp);
+        refreshBlockedBtn(btnBlocked);
+        btnBlocked.setOnClickListener(v -> showBlockedDevices(btnBlocked));
 
         // 关于卡（与电脑端一致：名称版本 + 说明 + 作者联系，邮箱可点击）
         TextView about = new TextView(this);

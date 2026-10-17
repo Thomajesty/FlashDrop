@@ -433,7 +433,11 @@ public class FlashNode {
                 String pid = msg.optString("id");
                 String ip = pkt.getAddress().getHostAddress();
                 if (pid.equals(deviceId)) continue;
+                // ★ v1.18.31：已删除（屏蔽）的设备 —— 不回应它的广播、不建连。
+                //   少回一包，对方就少一条"发现我们"的路径，删除更彻底。
+                if (prefs.isBlocked(pid)) { peers.remove(pid); continue; }
                 Peer peer = touchPeer(msg, ip);
+                if (peer == null) continue;      // 被删除的设备（含合并后的新 ID）
                 long now = System.currentTimeMillis();
                 Long last = lastReply.get(pid);
                 if (last == null || now - last > 10000) {
@@ -457,6 +461,13 @@ public class FlashNode {
         String pid = msg.optString("id");
         String mergedFrom = mergeCandidate(pid, msg);
         if (mergedFrom != null) mergePeer(mergedFrom, pid);
+        // ★ v1.18.31：已删除（屏蔽）的设备不进 peers。
+        //   合并场景要连"合并自的旧 ID"一起查 —— 否则删了旧版设备、
+        //   新版一上线就被合并进来重新占列表（用户："连接过的设备删不掉"）。
+        if (prefs.isBlocked(pid) || (mergedFrom != null && prefs.isBlocked(mergedFrom))) {
+            peers.remove(pid);
+            return null;
+        }
         Peer peer = peers.get(pid);
         boolean isNew = false;
         if (peer == null) {
@@ -553,6 +564,34 @@ public class FlashNode {
             for (JSONObject o : list) arr.put(o);
             emit(FdProto.obj("event", "peers", "peers", arr));
         } catch (Exception ignored) {}
+    }
+
+    /**
+     * ★ v1.18.31：删除设备后**立即**生效。
+     *
+     * 关掉到已删除设备的现存连接、把它们从 peers 清出去并刷新列表。
+     * 不调用的话，删除时正连着的那条 TCP 会一直活到心跳超时
+     * （息屏放宽后最长可达数分钟），期间对方仍能发文件/文字，
+     * 用户看到的就是"删了还能收到/设备还在"。
+     */
+    public void enforceBlocklist() {
+        try {
+            // ★ 顺序要紧：**先把 peers 摘掉再关连接**。
+            //   closeConn 里对仍在 peers 中的条目会 ensureConnected(force)，
+            //   顺序反了就会"关一条、拨一条"，对被删设备形成连接风暴。
+            boolean changed = false;
+            for (String id : new ArrayList<>(peers.keySet())) {
+                if (prefs.isBlocked(id)) { peers.remove(id); changed = true; }
+            }
+            for (Conn c : new ArrayList<>(conns.values())) {
+                if (c == null || c.peerId == null) continue;
+                if (prefs.isBlocked(c.peerId)) {
+                    c.replaced = true;
+                    closeConn(c);
+                }
+            }
+            if (changed) notifyPeers();
+        } catch (Throwable ignored) {}
     }
 
     public JSONObject peerSnapshot(Peer p) {
@@ -749,8 +788,27 @@ public class FlashNode {
         if (hello == null || hello.optString("id").equals(deviceId)) {
             closeConn(conn); return;
         }
+        // ★ v1.18.31：已删除（屏蔽）的设备 —— 直接拒连。
+        //   连接都不建，对方发文件/文字在这条链路上全部失败，
+        //   从根上保证"删掉的设备不会再冒出来"（含跨版本身份合并后的新 ID）。
+        if (peerBlocked(hello)) {
+            log("已拒连被删除的设备 " + hello.optString("id").substring(0, 8));
+            closeConn(conn); return;
+        }
         if (!registerConn(conn, hello)) return;
         readerLoop(conn);
+    }
+
+    /** 该 HELLO 对应的设备是否已被删除（屏蔽）：本机 ID 或它合并自的旧 ID 命中即算 */
+    private boolean peerBlocked(JSONObject hello) {
+        try {
+            String pid = hello.optString("id");
+            if (prefs.isBlocked(pid)) return true;
+            String mergedFrom = mergeCandidate(pid, hello);
+            return mergedFrom != null && prefs.isBlocked(mergedFrom);
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     private boolean connPreferred(Conn c, String peerId) {
@@ -862,7 +920,10 @@ public class FlashNode {
                 long now = System.currentTimeMillis();
                 p.nextRetry = now + (long) (p.backoff * 1000);
                 p.backoff = Math.min(p.backoff * 2, 30);
-                ensureConnected(p, true);
+                // ★ v1.18.31：已删除（屏蔽）的设备**不重连**。
+                //   否则 enforceBlocklist 关掉连接后这里立刻回拨，
+                //   拨通又被 session() 拒、再关、再拨……变成对端设备的连接风暴。
+                if (!prefs.isBlocked(pid)) ensureConnected(p, true);
             }
             notifyPeers();
         }
@@ -2150,6 +2211,11 @@ public class FlashNode {
             if (hello == null) { closeConn(conn); return new Object[]{false, "对端无响应"}; }
             if (hello.optString("id").equals(deviceId)) {
                 closeConn(conn); return new Object[]{false, "不能添加自己"};
+            }
+            // ★ v1.18.31：已删除（屏蔽）的设备不允许手动加回 —— 否则删除可被绕过
+            if (peerBlocked(hello)) {
+                closeConn(conn);
+                return new Object[]{false, "该设备已被删除，可在设置页「已删除的设备」中恢复"};
             }
             conn.sock.setSoTimeout(0);
             if (!registerConn(conn, hello)) return new Object[]{false, "已存在更优连接"};

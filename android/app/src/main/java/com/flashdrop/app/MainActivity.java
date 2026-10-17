@@ -1865,6 +1865,13 @@ public class MainActivity extends Activity {
 
     private void handleEvent(JSONObject e) {
         String ev = e.optString("event");
+        // ★ v1.18.31：已删除（屏蔽）设备的事件直接丢弃。
+        //   节点层已拒连，这里是防"删除瞬间正在途中"的那一包 text/transfer
+        //   又把聊天记录写回来（写完设备又会从历史里冒出来）。
+        if (("text".equals(ev) || "transfer".equals(ev))
+                && Prefs.get(this).isBlocked(e.optString("peer_id"))) {
+            return;
+        }
         switch (ev) {
             case "peers": {
                 peerMap.clear();
@@ -1874,7 +1881,12 @@ public class MainActivity extends Activity {
                     for (int i = 0; i < arr.length(); i++) {
                         JSONObject p = arr.optJSONObject(i);
                         if (p == null) continue;
-                        peerMap.put(p.optString("id"), p);
+                        String pid = p.optString("id");
+                        // ★ v1.18.31：已删除（屏蔽）的设备不进内存列表。
+                        //   节点层已不发现它，这里是 UI 侧的第二道闸
+                        //   （防旧快照/竞态把删掉的设备又带回来）。
+                        if (Prefs.get(this).isBlocked(pid)) continue;
+                        peerMap.put(pid, p);
                         if (p.optBoolean("online")) online++;
                     }
                 }
@@ -1986,6 +1998,15 @@ public class MainActivity extends Activity {
             case "peer_merged": {
                 // 同机跨版本升级：旧 ID 聊天记录并入新 ID 后重载
                 final String oldId = e.optString("old"), newId = e.optString("new");
+                // ★ v1.18.31：旧 ID 被删除过 → 新 ID 一并屏蔽。
+                //   否则同一台手机换个版本（新 ID）上线，设备又回到列表里，
+                //   "删掉的设备"被身份合并绕回来了。
+                if (Prefs.get(this).isBlocked(oldId) && !newId.isEmpty()) {
+                    Prefs.get(this).blockPeer(newId, e.optString("name"));
+                    try { FlashApp.get().node().enforceBlocklist(); }
+                    catch (Throwable ignored) {}
+                    break;
+                }
                 new Thread(() -> {
                     FdUtil.mergeHistory(FlashApp.get(), oldId, newId);
                     FlashApp.get().historyMerged = true;
@@ -2936,6 +2957,9 @@ public class MainActivity extends Activity {
             // ★ v1.18.24：无 id 的脏数据不入列 —— 否则会多出一条名字为空、
             //   选中后 viewPeerId="" 切不出任何内容的"幽灵行"
             if (id == null || id.isEmpty()) continue;
+            // ★ v1.18.31：已删除（屏蔽）的设备不入列，也不再写回 known_peers
+            //   （rememberPeer 是删除后设备"复活"的另一条路径）
+            if (Prefs.get(this).isBlocked(id)) continue;
             // ★ v1.18.18：显示备注名（不改 peer 数据本身）
             spinLabels.add(displayNameOf(id, p.optString("name")));
             spinOnline.add(p.optBoolean("online"));
@@ -2960,6 +2984,8 @@ public class MainActivity extends Activity {
                     if (o == null) continue;
                     String id = o.optString("id");
                     if (id.isEmpty() || seen.contains(id)) continue;
+                    // ★ v1.18.31：已删除（屏蔽）的设备不以"离线设备"身份补位
+                    if (Prefs.get(this).isBlocked(id)) continue;
                     if (!FdUtil.historyFile(this, id).exists()
                             && !o.has("last_seen")) continue;   // 从未有过会话 → 不占位
                     // ★ v1.18.18：离线设备同样显示备注名
@@ -3127,6 +3153,14 @@ public class MainActivity extends Activity {
          * 展开时才出现可点的删除入口 —— 与微信「长按会话删除」同样的克制思路，
          * 但这里用显式 X 更易发现。
          *
+         * ★ v1.18.31（用户反馈「连接过的安卓手机不能在设备列表删除」）：
+         *   ✕ 此前**只对有聊天记录的设备显示**（hasHistory 门槛）——
+         *   "连接过但从没聊过/传过"的设备行里一个删除入口都没有，
+         *   只能靠长按收起态选择器这条隐藏路径，用户根本找不到。
+         *   现在**所有设备行统一给 ✕**（"全部设备"仍不给：聚合视图无对应会话）。
+         *   v1.18.24 的教训保持不变：✕ 只设 clickable、**不设 focusable**
+         *   （可聚焦子控件会让 AbsListView 把整行点击判给它，行就"点不动"）。
+         *
          * 「全部设备」是聚合视图、不对应真实会话，故不提供 X。
          */
         @Override
@@ -3139,18 +3173,15 @@ public class MainActivity extends Activity {
             boolean hasSession = !isAll && spinnerIds.size() > position;
             String pid = spinnerIds.size() > position ? spinnerIds.get(position) : null;
 
-            // 删除按钮只在「既不是全部设备、又确实聊过」时出现；
-            // 判定标准与 Windows 端一致：磁盘上存在该设备的聊天记录文件。
-            boolean hasHistory = false;
-            if (hasSession && pid != null) {
-                try {
-                    hasHistory = FdUtil.historyFile(MainActivity.this, pid).exists();
-                } catch (Throwable ignored) {}
-            }
             // ✕ 槽位 = getView 里加在最后的那一个 FrameLayout
             View last = row.getChildAt(row.getChildCount() - 1);
             if (!(last instanceof FrameLayout)) return row;
             FrameLayout xSlot = (FrameLayout) last;
+            // ★ v1.18.24：槽位必须**无条件**先清空（里面可能是收起态残留的 ↻，
+            //   它是 focusable 的，会把整行点击吃掉）；v1.18.31：清空后除
+            //   「全部设备」外一律放 ✕，不再问有没有聊天记录。
+            xSlot.removeAllViews();
+            if (!hasSession || pid == null) return row;
             // ★ v1.18.24 修复（用户反馈「无记录的设备行点不动 / 在线设备也切不过去」）：
             //
             //   根因：getView() 给 ✕ 槽位塞的是 ↻ 刷新按钮，且它是
@@ -3163,16 +3194,18 @@ public class MainActivity extends Activity {
             //   刚发现、从未聊过的在线设备正是"无记录"，所以两个现象同源。
             //
             //   修法：**无论有无记录都先清空槽位**，再按需放 ✕。
-            //   无记录 → 槽位留空，整行纯净可点（可以打开空会话给在线设备发文件）。
-            xSlot.removeAllViews();
-            if (!hasHistory) return row;
-
+            //   ★ v1.18.31：清空后除「全部设备」外**一律放 ✕**（见上方注释），
+            //   ✕ 只 clickable 不 focusable，行点击不受影响。
             TextView x = new TextView(MainActivity.this);
             x.setText("✕");
             x.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
             x.setTextColor(theme.dim);
             x.setGravity(android.view.Gravity.CENTER);
             x.setTag(TAG_DELETE_X);
+            // 只 clickable、**绝不 focusable**（v1.18.24 的教训）：
+            // 可聚焦子控件会让 AbsListView 把整行点击判给它
+            x.setClickable(true);
+            x.setFocusable(false);
             final String delId = pid;
             final String delName = spinLabels.get(position);
             x.setOnClickListener(v -> confirmDeleteConversation(delId, delName));
@@ -3311,6 +3344,15 @@ public class MainActivity extends Activity {
      *   ② 内存中该会话的消息（立即从界面消失）
      *   ③ 该设备保存目录下的收发文件（Download/FlashDrop/保存的文件/<name>）
      * 并顺带从 known_peers 档案里摘掉，避免它继续以「离线设备」身份占位。
+     *
+     * ★ v1.18.31：删除 = 同时进**持久屏蔽名单**（blocked_peers）。
+     *   用户反馈「连接过的安卓手机不能在设备列表删除」——根因是设备还在
+     *   同一网段，UDP 广播发现 + rebuildSpinner 的 rememberPeer 会把它
+     *   **立刻加回列表**，forgetPeer 单靠摘档案拦不住。现在：
+     *     · 节点层：广播不回应、连接直接拒、手动添加也拒（FlashNode）
+     *     · UI 层：设备列表 / 离线补位 / 全局搜索全按名单过滤
+     *     · 事件层：它的 text/transfer 事件直接丢弃（NodeService 分发处）
+     *   误删可恢复：设置页「已删除的设备」→ 解除屏蔽。
      */
     private void confirmDeleteConversation(String pid, String name) {
         if (pid == null || pid.isEmpty()) return;
@@ -3318,8 +3360,10 @@ public class MainActivity extends Activity {
         String show = (name == null || name.isEmpty()) ? "该设备" : name;
         FdDialog.danger(this, "删除会话",
                 "确定删除与「" + show + "」的会话吗？\n\n"
-                        + "将删除：聊天记录、收到的文件、发送过的文件。\n"
-                        + "删除后不可恢复。",
+                        + "将清除该设备的聊天记录、收到的文件、发送过的文件（如有），\n"
+                        + "并将其从设备列表移除。\n\n"
+                        + "删除后该设备不再出现在设备列表，也不会再收到它的消息\n"
+                        + "（误删可在设置页「已删除的设备」中恢复）。",
                 "删除", () -> {
                     // ① 磁盘：历史 + 保存目录
                     new Thread(() -> {
@@ -3335,6 +3379,11 @@ public class MainActivity extends Activity {
                         } catch (Throwable ignored) {}
                         // ③ 档案：不再作为离线设备出现
                         try { Prefs.get(MainActivity.this).forgetPeer(pid); } catch (Throwable ignored) {}
+                        // ★ v1.18.31：持久屏蔽 + 节点层立即断开现存连接
+                        try { Prefs.get(MainActivity.this).blockPeer(pid, show); }
+                        catch (Throwable ignored) {}
+                        try { FlashApp.get().node().enforceBlocklist(); }
+                        catch (Throwable ignored) {}
                         // ★ v1.18.18：同时清掉设备备注，避免留下永远不再显示的孤儿条目
                         try { Prefs.get(MainActivity.this).setAlias(pid, ""); }
                         catch (Throwable ignored) {}
@@ -3345,7 +3394,7 @@ public class MainActivity extends Activity {
                             if (pid.equals(viewPeerId)) viewPeerId = ALL_ID;
                             rebuildSpinner();
                             refreshChat();
-                            toast("已删除与「" + show + "」的会话");
+                            toast("已删除与「" + show + "」的会话，该设备不会再出现");
                         });
                     }, "fd-del-conv").start();
                 });
@@ -5067,7 +5116,8 @@ public class MainActivity extends Activity {
                     for (int i = 0; i < known.length(); i++) {
                         String id = known.optJSONObject(i) == null ? ""
                                 : known.optJSONObject(i).optString("id");
-                        if (!id.isEmpty()) pids.add(id);
+                        // ★ v1.18.31：已删除的设备不参与全局搜索
+                        if (!id.isEmpty() && !Prefs.get(this).isBlocked(id)) pids.add(id);
                     }
                 } catch (Throwable ignored) {}
             }

@@ -118,11 +118,16 @@ def main():
     ck("搜索结果分隔线跟随主题（不再写死 #2E3138）",
        "searchResultList.setDivider(" in ma and "theme.border" in ma)
     # ---- v1.18.24：下拉行残留 ↻ 吃掉 item 点击（点不动/切不过去）----
-    ck("下拉行无论有无记录都先清空 ✕ 槽位（修复点不动）",
-       "xSlot.removeAllViews();" in ma
-       and "if (!hasHistory) return row;" in ma
-       and ma.index("xSlot.removeAllViews();")
-       < ma.index("if (!hasHistory) return row;"))
+    # ---- v1.18.31 演进：清空后**所有设备行一律放 ✕**（不再问有没有记录），
+    #      "连接过但从没聊过"的设备也必须有删除入口；早退条件从
+    #      !hasHistory 改为 !hasSession（"全部设备"仍不给 ✕）。
+    ck("下拉行先无条件清空 ✕ 槽位（v1.18.24 修复点不动，仍然有效）",
+       "xSlot.removeAllViews();" in ma)
+    ck("清空槽位后才判断是否放 ✕（顺序不能反）",
+       ma.index("xSlot.removeAllViews();")
+       < ma.index("if (!hasSession || pid == null) return row;"))
+    ck("✕ 只 clickable 不 focusable（可聚焦子控件会吃整行点击）",
+       "x.setClickable(true);" in ma and "x.setFocusable(false);" in ma)
     ck("无 id 的脏 peer 不入设备列表（避免幽灵行）",
        "if (id == null || id.isEmpty()) continue;" in ma)
     ck("toggleSearchBar 改为原地形变（applySearchF 逐帧驱动）",

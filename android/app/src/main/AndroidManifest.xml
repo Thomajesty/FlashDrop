@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.flashdrop.app"
-    android:versionCode="59"
-    android:versionName="1.18.30">
+    android:versionCode="60"
+    android:versionName="1.18.31">
 
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34" />
 

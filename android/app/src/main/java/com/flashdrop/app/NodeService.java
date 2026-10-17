@@ -81,6 +81,16 @@ public class NodeService extends Service {
         if (listenerInstalled) return;
         listenerInstalled = true;
         FlashApp.get().node().setListener(e -> {
+            // ★ v1.18.31：已删除（屏蔽）设备的消息/文件事件直接丢弃。
+            //   放在分发最前面，前台（界面）与后台（落库+通知）两条路都挡住 ——
+            //   只挡 UI 的话，后台收到的消息仍会写进历史，设备又会冒出来。
+            try {
+                String ev = e.optString("event");
+                if (("text".equals(ev) || "transfer".equals(ev))
+                        && FlashApp.get().prefs().isBlocked(e.optString("peer_id"))) {
+                    return;
+                }
+            } catch (Throwable ignored) {}
             FlashNode.Listener ui = FlashApp.get().uiListener;
             if (ui != null) {
                 try { ui.onEvent(e); } catch (Exception ignored) {}

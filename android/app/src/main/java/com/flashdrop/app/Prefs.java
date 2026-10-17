@@ -229,6 +229,78 @@ public class Prefs {
         } catch (Throwable ignored) {}
     }
 
+    // ================= v1.18.31 新增：已删除（不再显示）的设备 =================
+
+    /**
+     * 「已删除的设备」名单（JSON 数组，元素 {id, name, ts}）。
+     *
+     * ★ 为什么删除会话光靠 forgetPeer 不够：
+     *   设备只要还在同一网段，UDP 广播发现 + rebuildSpinner 里的 rememberPeer
+     *   会把它**立刻加回列表** —— 用户看到的就是"连接过的设备删不掉"。
+     *   删除必须同时落一份持久屏蔽名单，节点层（广播/连接/收发事件）与
+     *   UI 层（设备列表/搜索）都按它过滤，删完才真正不再出现。
+     * ★ 可恢复：设置页「已删除的设备」里可解除屏蔽，设备重新出现在列表。
+     */
+    public JSONArray blockedPeers() {
+        try { return new JSONArray(sp.getString("blocked_peers", "[]")); }
+        catch (Exception e) { return new JSONArray(); }
+    }
+
+    public void blockedPeers(JSONArray arr) {
+        sp.edit().putString("blocked_peers", arr == null ? "[]" : arr.toString()).apply();
+    }
+
+    /** 该设备是否已被删除（屏蔽） */
+    public boolean isBlocked(String id) {
+        if (id == null || id.isEmpty()) return false;
+        try {
+            JSONArray arr = blockedPeers();
+            for (int i = 0; i < arr.length(); i++) {
+                org.json.JSONObject o = arr.optJSONObject(i);
+                if (o != null && id.equals(o.optString("id"))) return true;
+            }
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    /** 加入屏蔽名单（幂等；同设备重复删除只保留一条，时间刷新） */
+    public void blockPeer(String id, String name) {
+        if (id == null || id.isEmpty()) return;
+        try {
+            JSONArray arr = blockedPeers();
+            JSONArray out = new JSONArray();
+            for (int i = 0; i < arr.length(); i++) {
+                org.json.JSONObject o = arr.optJSONObject(i);
+                if (o == null || id.equals(o.optString("id"))) continue;   // 去重
+                out.put(o);
+            }
+            org.json.JSONObject o = new org.json.JSONObject();
+            o.put("id", id);
+            o.put("name", name == null ? "" : name);
+            o.put("ts", System.currentTimeMillis());
+            // 新删的插到最前，设置页列表天然按「最近删除」排序
+            JSONArray head = new JSONArray();
+            head.put(o);
+            for (int i = 0; i < out.length(); i++) head.put(out.opt(i));
+            blockedPeers(head);
+        } catch (Throwable ignored) {}
+    }
+
+    /** 解除屏蔽（设置页「恢复设备」用） */
+    public void unblockPeer(String id) {
+        if (id == null || id.isEmpty()) return;
+        try {
+            JSONArray arr = blockedPeers();
+            JSONArray out = new JSONArray();
+            for (int i = 0; i < arr.length(); i++) {
+                org.json.JSONObject o = arr.optJSONObject(i);
+                if (o != null && id.equals(o.optString("id"))) continue;
+                out.put(o);
+            }
+            blockedPeers(out);
+        } catch (Throwable ignored) {}
+    }
+
     /** ================= v1.18.18 新增 ================= */
 
     /**
