@@ -129,9 +129,17 @@ def main():
 
     ipc_sock = single_instance_lock()
     if ipc_sock is None:
-        # 已有实例在运行：已发送唤起请求，直接退出
-        print("FlashDrop 已在运行，已唤起现有窗口")
-        sys.exit(0)
+        if os.environ.get("FLASHDROP_ALLOW_MULTI") == "1":
+            # ★ v1.18.32 修复：多开调试模式此前是死路 —— single_instance_lock
+            #   在「锁被活实例持有」时无论是否多开都返回 None，而这里对 None
+            #   一律退出，注释承诺的"继续运行"从未生效（冒烟测试被真实例
+            #   挡住就是它暴露的）。MainWindow 本就支持 ipc_sock=None（跳过
+            #   IPC 监听），此处放行即可。
+            print("FlashDrop 多开模式：已有实例在运行，本实例不接管单实例锁")
+        else:
+            # 已有实例在运行：已发送唤起请求，直接退出
+            print("FlashDrop 已在运行，已唤起现有窗口")
+            sys.exit(0)
 
     cfg = Config()
     if args.port:

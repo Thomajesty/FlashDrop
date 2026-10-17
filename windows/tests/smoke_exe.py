@@ -76,12 +76,25 @@ print(f"  大小: {os.path.getsize(exe):,} B")
 data_dir = tempfile.mkdtemp(prefix="fd_smoke_")
 env = dict(os.environ)
 env["FLASHDROP_DATA_DIR"] = data_dir
+# ★ v1.18.32：本机若跑着真实 FlashDrop，单实例锁(UDP 58898)会让冒烟实例
+#   直接"唤起已有窗口后退出"，config.json 永远不会生成 → 假失败。
+#   用多开开关 + 独立服务端口彻底隔离。
+env["FLASHDROP_ALLOW_MULTI"] = "1"
+import socket as _s
+_smoke_port = 58899
+_c = _s.socket()
+try:
+    _c.bind(("127.0.0.1", 0))
+    _smoke_port = _c.getsockname()[1]
+finally:
+    _c.close()
+env["FLASHDROP_SMOKE_PORT"] = str(_smoke_port)
 # 让 Qt 在无桌面会话时也能起（CI/沙箱）
 env.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 print("\n=== §1 启动进程并观察存活 ===")
 proc = subprocess.Popen(
-    [exe, "--hidden"],
+    [exe, "--hidden", "--port", env["FLASHDROP_SMOKE_PORT"]],
     env=env,
     stdout=subprocess.PIPE,
     stderr=subprocess.STDOUT,
@@ -131,10 +144,10 @@ check("无 'Unhandled exception'", "Unhandled exception" not in out)
 
 print("\n=== §3 配置文件被正确创建（说明 __init__ 走通） ===")
 cfg_path = os.path.join(data_dir, "config.json")
-# 给一点落盘时间
-for _ in range(10):
-    if os.path.isfile(cfg_path):
-        break
+# ★ v1.18.32：等待放宽到 220s —— 沙箱内 onefile 冷启动约 100s（解包+Defender
+#   扫描），原先只等 5s，冷启动时 Config 还没建就误报"config.json 未生成"。
+deadline = time.time() + 220
+while time.time() < deadline and not os.path.isfile(cfg_path):
     time.sleep(0.5)
 check("config.json 已生成", os.path.isfile(cfg_path), cfg_path)
 
@@ -161,7 +174,7 @@ if os.path.isfile(cfg_path):
     except Exception:
         port = 58899
 else:
-    port = 58899
+    port = int(env.get("FLASHDROP_SMOKE_PORT") or 58899)
 print(f"  期望端口: {port}")
 
 listening = False

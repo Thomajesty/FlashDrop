@@ -6,11 +6,12 @@ import shutil
 import subprocess
 import sys
 import ctypes
+import tempfile
 import threading
 import time
 
-from PySide6.QtCore import (Qt, QTimer, QUrl, QRectF, QPointF, QEvent, QObject,
-                           Signal)
+from PySide6.QtCore import (Qt, QThread, QTimer, QUrl, QRectF, QPointF, QEvent,
+                           QObject, Signal)
 from PySide6.QtGui import (QIcon, QAction, QPixmap, QPainter, QColor, QPolygonF,
                            QLinearGradient, QBrush, QDesktopServices, QCloseEvent,
                            QDragEnterEvent, QDropEvent, QKeySequence, QShortcut,
@@ -22,7 +23,8 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
                                QComboBox, QSpinBox, QTabWidget, QMessageBox,
                                QSystemTrayIcon, QMenu, QApplication,
                                QDialogButtonBox, QGraphicsOpacityEffect, QFrame,
-                               QToolButton, QStackedWidget, QInputDialog)
+                               QToolButton, QStackedWidget, QInputDialog,
+                               QProgressBar)
 
 from .. import util
 from .. import updater
@@ -249,14 +251,69 @@ class UpdateChecker(QObject):
                          name="fd-update-check").start()
 
 
+class UpdateDownloader(QObject):
+    """后台下载安装包；进度经信号回主线程（v1.18.32）。
+
+    工作线程不碰 UI：progress/finished/failed 都是跨线程 emit 安全的信号。
+    先写 .part 完成再改名，避免半包被当成成品。
+    """
+
+    progress = Signal(int, int)          # done_bytes, total_bytes(0=未知)
+    finished = Signal(str)               # 保存路径
+    failed = Signal(str)                 # 错误信息
+
+    def __init__(self, url, dest, parent=None):
+        super().__init__(parent)
+        self.url = url
+        self.dest = dest
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        import tempfile
+        import urllib.request
+        try:
+            req = urllib.request.Request(
+                self.url, headers={"User-Agent": updater.USER_AGENT})
+            os.makedirs(os.path.dirname(self.dest), exist_ok=True)
+            tmp = self.dest + ".part"
+            with urllib.request.urlopen(req, timeout=30) as resp, \
+                    open(tmp, "wb") as f:
+                total = int(resp.headers.get("Content-Length") or 0)
+                done = 0
+                while not self._cancelled:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    done += len(chunk)
+                    self.progress.emit(done, total)
+            if self._cancelled:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                return
+            os.replace(tmp, self.dest)
+            self.finished.emit(self.dest)
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
 class UpdateDialog(QDialog):
-    """发现新版本：版本对比 + 更新日志 + 下载 / 跳过此版本。"""
+    """发现新版本：版本对比 + 更新日志 + 应用内下载 / 跳过此版本。"""
 
     def __init__(self, cfg, current, info, parent=None):
         super().__init__(parent)
         self.cfg = cfg
         self.info = info
         self.version = info.get("version", "")
+        self._thread = None
+        self._worker = None
+        self._kind = "exe"
+        self._downloaded = None       # 下载完成的文件路径
         self.setWindowTitle("发现新版本")
         self.setMinimumWidth(500)
         v = QVBoxLayout(self)
@@ -273,35 +330,164 @@ class UpdateDialog(QDialog):
         notes.setMinimumHeight(180)
         v.addWidget(notes, 1)
 
+        # ---- 下载进度（初始隐藏）----
+        self.progress = QProgressBar()
+        self.progress.setTextVisible(True)
+        self.progress.setRange(0, 100)
+        self.progress.hide()
+        v.addWidget(self.progress)
+        self.status = QLabel("")
+        self.status.setStyleSheet(f"color:{ACCENT2};font-size:12px;")
+        self.status.hide()
+        v.addWidget(self.status)
+
         row = QHBoxLayout()
         row.setSpacing(8)
         exe = updater.asset_for(info, ".exe")
         apk = updater.asset_for(info, ".apk")
+        self.buttons = []
         if exe:
             b = QPushButton("下载 Windows 版")
-            b.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(exe["url"])))
+            b.clicked.connect(lambda: self._start_download(exe, "exe"))
             row.addWidget(b)
+            self.buttons.append(b)
         if apk:
             b = QPushButton("下载 Android 版")
-            b.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(apk["url"])))
+            b.clicked.connect(lambda: self._start_download(apk, "apk"))
             row.addWidget(b)
+            self.buttons.append(b)
         b = QPushButton("打开下载页")
-        b.clicked.connect(lambda: QDesktopServices.openUrl(
-            QUrl(info.get("html_url") or updater.RELEASES_PAGE)))
+        b.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(
+            info.get("html_url") or updater.RELEASES_PAGE)))
         row.addWidget(b)
+        self.buttons.append(b)
         row.addStretch(1)
         b = QPushButton("跳过此版本")
         b.clicked.connect(self._skip)
         row.addWidget(b)
+        self.buttons.append(b)
         b = QPushButton("稍后再说")
         b.clicked.connect(self.reject)
         b.setDefault(True)
         row.addWidget(b)
+        self.buttons.append(b)
         v.addLayout(row)
+        self._row = row
+
+    # ---------- 应用内下载（v1.18.32） ----------
+
+    def _start_download(self, asset, kind):
+        """把安装包下到临时目录；EXE 完成后可直接升级，APK 完成后开文件夹。"""
+        if self._thread is not None:
+            return
+        name = asset.get("name") or ("FlashDrop_v%s" % self.version)
+        dest = os.path.join(tempfile.gettempdir(), "FlashDropUpdate", name)
+        self._kind = kind
+        self.progress.show()
+        self.status.show()
+        self.status.setText("正在连接…")
+        self._set_buttons_enabled(False)
+
+        self._worker = UpdateDownloader(asset["url"], dest)
+        self._thread = QThread()
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.progress.connect(self._on_progress)
+        self._worker.finished.connect(self._on_finished)
+        self._worker.failed.connect(self._on_failed)
+        self._thread.start()
+
+    def _on_progress(self, done, total):
+        if total > 0:
+            pct = int(done * 100 / total)
+            self.progress.setRange(0, 100)
+            self.progress.setValue(pct)
+            self.status.setText("已下载 %s / %s（%d%%）"
+                                % (_fmt_size(done), _fmt_size(total), pct))
+        else:
+            self.progress.setRange(0, 0)   # 未知大小 → 走马灯
+            self.status.setText("已下载 %s" % _fmt_size(done))
+
+    def _on_finished(self, path):
+        self._cleanup_thread()
+        self._downloaded = path
+        self.progress.setRange(0, 100)
+        self.progress.setValue(100)
+        size = _fmt_size(os.path.getsize(path)) if os.path.exists(path) else ""
+        self.status.setText("下载完成（%s）：%s" % (size, path))
+        self._set_buttons_enabled(True)
+        if self._kind == "exe":
+            b = QPushButton("立即安装（关闭并启动新版本）")
+            b.clicked.connect(self._install)
+        else:
+            b = QPushButton("打开所在文件夹")
+            b.clicked.connect(lambda: _open_folder(path))
+        # 插到「打开下载页」之后，保持尾部三个按钮顺序
+        idx = self._row.count() - 3
+        self._row.insertWidget(idx, b)
+        self.buttons.append(b)
+
+    def _on_failed(self, msg):
+        self._cleanup_thread()
+        self.progress.hide()
+        self.status.setText("下载失败：%s（可点「打开下载页」手动下载）" % msg)
+        self._set_buttons_enabled(True)
+
+    def _install(self):
+        """关闭当前程序并启动新下载的安装包（PyInstaller onefile 直接运行即新版）。"""
+        path = self._downloaded
+        if not path or not os.path.exists(path):
+            return
+        try:
+            subprocess.Popen([path], close_fds=True)
+        except Exception as e:
+            self.status.setText("启动失败：%s" % e)
+            return
+        self.accept()
+        QApplication.quit()
+
+    def _set_buttons_enabled(self, on):
+        for b in self.buttons:
+            b.setEnabled(on)
+
+    def _cleanup_thread(self):
+        if self._thread is not None:
+            self._thread.quit()
+            self._thread.wait(3000)
+            self._thread = None
+            self._worker = None
 
     def _skip(self):
         updater.mark_version_skipped(self.cfg, self.version)
         self.reject()
+
+    def reject(self):
+        if self._worker is not None:
+            self._worker.cancel()
+        self._cleanup_thread()
+        super().reject()
+
+    def closeEvent(self, ev):
+        if self._worker is not None:
+            self._worker.cancel()
+        self._cleanup_thread()
+        super().closeEvent(ev)
+
+
+def _fmt_size(n):
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return "%.1f %s" % (n, unit) if unit != "B" else "%d B" % n
+        n /= 1024.0
+    return "%d B" % n
+
+
+def _open_folder(path):
+    """打开文件所在文件夹并选中该文件（资源管理器 /select）。"""
+    try:
+        subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+    except Exception:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(path)))
 
 
 class SettingsDialog(QDialog):

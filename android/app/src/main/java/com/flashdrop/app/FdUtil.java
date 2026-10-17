@@ -24,7 +24,7 @@ import java.util.UUID;
 public final class FdUtil {
     private FdUtil() {}
 
-    public static final String APP_VERSION = "1.18.31";
+    public static final String APP_VERSION = "1.18.32";
     public static final String APP_AUTHOR = "Thomajesty";
     public static final String APP_CONTACT = "Thomajesty@163.com";
 

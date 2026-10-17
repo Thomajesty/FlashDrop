@@ -192,18 +192,25 @@ ck("F4 xSlot 无条件先清空（防收起态 ↻ 残留吃点击）",
 
 manifest = rd(os.path.join(ROOT, "android", "app", "src", "main",
                            "AndroidManifest.xml"))
-ck("F5 AndroidManifest versionCode=60 / versionName=1.18.31",
-   'android:versionCode="60"' in manifest
-   and 'android:versionName="1.18.31"' in manifest)
-ck("F6 FdUtil.APP_VERSION=1.18.31",
-   'public static final String APP_VERSION = "1.18.31";' in fdutil)
+# ★ v1.18.32 起改为演进式断言：版本号只增不减、5 处彼此一致（勿写死具体值，
+#   否则每版都要改本套件——具体值的一致性由当版专项套件负责）
+_m = re.search(r'android:versionCode="(\d+)"', manifest)
+_vn = re.search(r'android:versionName="(\d+\.\d+\.\d+)"', manifest)
+_vcode = int(_m.group(1)) if _m else -1
+_vname = _vn.group(1) if _vn else ""
+ck("F5 AndroidManifest versionCode>=60 且版本语义 >=1.18.31",
+   _vcode >= 60 and _vname >= "1.18.31")
+ck("F6 FdUtil.APP_VERSION 与 manifest 一致",
+   ('public static final String APP_VERSION = "%s";' % _vname) in fdutil)
 win_init = rd(os.path.join(ROOT, "windows", "app", "__init__.py"))
-ck("F7 windows __version__=1.18.31（双端版本号一致）",
-   '__version__ = "1.18.31"' in win_init)
+ck("F7 windows __version__ 与 Android 一致",
+   ('__version__ = "%s"' % _vname) in win_init)
 bat = rd(os.path.join(ROOT, "android", "build_apk.bat"))
 sh = rd(os.path.join(ROOT, "android", "_build_v11817.sh"))
-ck("F8 build_apk.bat version 同步", "--version-code 60 --version-name 1.18.31" in bat)
-ck("F9 _build_v11817.sh version 同步", "--version-code 60 --version-name 1.18.31" in sh)
+ck("F8 build_apk.bat version 同步",
+   ("--version-code %d --version-name %s" % (_vcode, _vname)) in bat)
+ck("F9 _build_v11817.sh version 同步",
+   ("--version-code %d --version-name %s" % (_vcode, _vname)) in sh)
 ck("F10 aapt2 link 两个入口都带 -A assets（表情资产铁律）",
    '-A "%SRC%\\assets"' in bat and '-A "$BPW\\\\assets"' in sh)
 ck("F11 屏蔽名单持久化 key 不与既有 key 冲突",
