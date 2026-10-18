@@ -1698,12 +1698,16 @@ public class FlashNode {
                                String path, int attempt) {
         JSONObject info = sendInfo.get(tid);
         if (info == null) return;
+        // ★ v1.18.33：所有发送事件统一带上 src（源 content:// 或绝对路径）。
+        //   UI 靠它给发出侧图片气泡解码缩略图 / 打开图片查看器；
+        //   缺了它，凡不是从 sendFiles 直发路径建的气泡都会"图片不可用"。
         emit(FdProto.obj("event", "transfer", "kind", "send", "tid", tid,
                 "peer_id", pid, "file", info.optString("name"),
                 "size", info.optLong("size"), "mime", info.optString("mime"),
                 "state", state,
                 "reason", reason == null ? "" : reason,
                 "path", path == null ? "" : path,
+                "src", info.optString("src"),
                 "transferred", "ok".equals(state) ? info.optLong("size") : 0,
                 "attempt", attempt,
                 "targets", info.optJSONArray("targets") == null ? new JSONArray()
@@ -1822,6 +1826,16 @@ public class FlashNode {
             Map<String, String> st = new java.util.concurrent.ConcurrentHashMap<>();
             for (String pid : targetIds) st.put(pid, "sending");
             outStates.put(tid, st);
+            // ★ v1.18.33：与 sendFiles 同口径——补发每个文件前先发 started 事件
+            //   （必须带 src）。旧实现第一个事件来自 sendFileTo 的 emitSendState，
+            //   而 emitSendState 不带 src → 离线队列补发的图片气泡没有图片源，
+            //   表现为"上线发送成功后手机端不能显示图片 / 点开提示图片不可用"。
+            for (String pid : targetIds) {
+                emit(FdProto.obj("event", "transfer", "kind", "send", "tid", tid,
+                        "peer_id", pid, "file", name, "size", size, "mime", mime,
+                        "state", "started", "transferred", 0,
+                        "targets", new JSONArray(targetIds), "src", path));
+            }
             // sendFileTo 本身是同步方法（阻塞到结论），直接在当前线程串行调
             for (String pid : targetIds) {
                 sendFileTo(pid, tid, path, name, size, mime);

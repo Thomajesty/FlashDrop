@@ -1527,6 +1527,20 @@ public class MainActivity extends Activity {
                     // 摘要由 FlashApp.PendingSend.summary() 生成（含文件名净化），
                     // 与 Windows 端 _entry_text 同口径
                     m.file = p.summary();
+                    // ★ v1.18.33：图片待发送也要以照片气泡呈现（用户反馈
+                    //   "通过相册发送的图片，设备离线时待发送没有显示[图片]"）。
+                    //   旧实现待发气泡不带 mime/src，永远渲染成普通文件卡片，
+                    //   用户看不到待发的是什么图，以为没加上，于是反复重发 ——
+                    //   设备上线后同一张图被补发多次（电脑端"显示两遍"的根源）。
+                    //   现在把首个 URI 的 mime 与源地址挂上，走照片模式：
+                    //   真图预览 + "⏳ 待发送"状态，与发出后的气泡一致。
+                    String u0 = p.uris.isEmpty() ? "" : p.uris.get(0);
+                    String nm = FdUtil.uriDisplayName(u0);
+                    String mime0 = FdUtil.guessMime(nm == null ? "" : nm);
+                    if (FdUtil.isImageMime(mime0)) {
+                        m.mime = mime0;
+                        m.src = u0;
+                    }
                 }
                 m.targets = new ArrayList<>(p.targets);
                 m.peerId = p.targets.isEmpty() ? "" : p.targets.get(0);
@@ -3972,8 +3986,16 @@ public class MainActivity extends Activity {
             if (photoMode) {
                 // 照片模式：气泡下方小字 = 文件名 · 大小
                 // ★ v1.18.0：改用 onPageDim（压在页面上），不再用 onDim（压在气泡上）
-                h.status.setText((TextUtils.isEmpty(m.file) ? "图片" : m.file)
-                        + " · " + FdUtil.fmtSize(m.size));
+                // ★ v1.18.33：待发送的图片气泡保留"⏳ 待发送"标记（0 B 不显示大小），
+                //   否则照片模式下 pending 状态被"文件名 · 大小"覆盖，用户看不出没发出
+                String phLabel = (TextUtils.isEmpty(m.file) ? "图片" : m.file);
+                String phSize = FdUtil.fmtSize(m.size);
+                if ("pending".equals(m.state)) {
+                    h.status.setText("⏳ 待发送 · " + phLabel
+                            + ("0 B".equals(phSize) ? "" : " · " + phSize));
+                } else {
+                    h.status.setText(phLabel + " · " + phSize);
+                }
                 h.status.setTextColor(onPageDim);
                 h.status.setVisibility(View.VISIBLE);
             }

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """FlashDrop Windows 端"""
 
-__version__ = "1.18.32"
+__version__ = "1.18.33"
 
 APP_AUTHOR = "Thomajesty"
 APP_CONTACT = "Thomajesty@163.com"

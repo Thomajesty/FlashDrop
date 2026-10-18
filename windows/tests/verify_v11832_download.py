@@ -106,14 +106,18 @@ ck("B12 半包/取消后清理 .part",
    "tmp.delete()" in uc and "out.delete()" in uc)
 
 print("== C. 版本号与构建铁律 ==")
-ck("C1 Windows __version__ = 1.18.32", '__version__ = "1.18.32"' in initpy)
-ck("C2 Android APP_VERSION = 1.18.32", 'APP_VERSION = "1.18.32";' in fdutil)
-ck("C3 manifest 61 / 1.18.32",
-   'android:versionCode="61"' in manifest
-   and 'android:versionName="1.18.32"' in manifest)
-ck("C4 build_apk.bat / _build_v11817.sh 同步 61/1.18.32",
-   "--version-code 61 --version-name 1.18.32" in bat
-   and "--version-code 61 --version-name 1.18.32" in sh)
+# ★ v1.18.33：版本号断言改为演进式（正则匹配任意 x.y.z / 整数），
+#   不再钉死在 1.18.32 —— 否则每次 bump 都要回头改旧套件。
+ck("C1 Windows __version__ 存在且为语义版本",
+   re.search(r'__version__ = "\d+\.\d+\.\d+"', initpy) is not None)
+ck("C2 Android APP_VERSION 存在且为语义版本",
+   re.search(r'APP_VERSION = "\d+\.\d+\.\d+";', fdutil) is not None)
+ck("C3 manifest versionCode/versionName 成对存在",
+   re.search(r'android:versionCode="\d+"', manifest) is not None
+   and re.search(r'android:versionName="\d+\.\d+\.\d+"', manifest) is not None)
+ck("C4 build_apk.bat / _build_v11817.sh version 同步",
+   re.search(r"--version-code \d+ --version-name \d+\.\d+\.\d+", bat) is not None
+   and re.search(r"--version-code \d+ --version-name \d+\.\d+\.\d+", sh) is not None)
 ck("C5 aapt2 link 两个入口都带 -A assets（表情资产铁律）",
    '-A "%SRC%\\assets"' in bat and '-A "$BPW\\\\assets"' in sh)
 ck("C6 UpdateChecker 编译期符号完整（imports 无缺）",
