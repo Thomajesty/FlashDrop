@@ -293,8 +293,14 @@ def grab_virtual_desktop(_unused=None):
     # 取设备像素比：高 DPI 下 grabWindow 返回物理像素，需要据此换算
     dpr = max((s.devicePixelRatio() for s in QGuiApplication.screens()),
               default=1.0)
+    # ★ v1.18.34 修复（用户反馈"截图比例不对/不是桌面全屏的比例"）：
+    #   画布**先不设 devicePixelRatio**，让 QPainter 工作在物理像素坐标 ——
+    #   旧实现创建画布后立刻 setDevicePixelRatio(dpr)，QPainter 随之变成
+    #   逻辑坐标系，而下面 dst 仍按物理像素计算 → 逻辑绘制又被 DPR 再放大
+    #   一次，内容整体放大 dpr 倍并裁掉右下（125% 缩放下内容多放大 25%，
+    #   框选"全屏"得到的是放大 1.25 倍的 80% 桌面）。物理像素全部画完后
+    #   再统一打上 DPR 标记，与 overlay/裁剪逻辑的换算保持一致。
     canvas = QPixmap(int(union.width() * dpr), int(union.height() * dpr))
-    canvas.setDevicePixelRatio(dpr)
     canvas.fill(QColor(0, 0, 0, 255))
 
     p = QPainter(canvas)
@@ -303,12 +309,17 @@ def grab_virtual_desktop(_unused=None):
         shot = s.grabWindow(0)
         if shot.isNull():
             continue
-        # 目标矩形：该屏在并集里的相对位置（按物理像素换算）
+        # ★ grabWindow 返回的 shot 自带 DPR 标记；Qt 的 drawPixmap 会按
+        #   逻辑尺寸解释它 → 直接画会再叠一次缩放。剥掉标记后它就是
+        #   纯物理像素图，与物理坐标画布严格 1:1 对应。
+        shot.setDevicePixelRatio(1.0)
+        # 目标矩形：该屏在并集里的相对位置（物理像素）
         dst = QRect(int((sg.left() - union.left()) * dpr),
                     int((sg.top() - union.top()) * dpr),
                     int(sg.width() * dpr), int(sg.height() * dpr))
         p.drawPixmap(dst, shot)
     p.end()
+    canvas.setDevicePixelRatio(dpr)
     return canvas, union.topLeft()
 
 

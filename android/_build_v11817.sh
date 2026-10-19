@@ -56,7 +56,7 @@ echo "== 2. aapt2 link =="
   -A "$BPW\\assets" \
   --java "$BPW\\build\\gen" --auto-add-overlay \
   --min-sdk-version 24 --target-sdk-version 34 \
-  --version-code 62 --version-name 1.18.33
+  --version-code 63 --version-name 1.18.34
 
 echo "== 3. javac =="
 # javac 的 @argfile 必须用 Windows 路径，否则它把 /c/... 当成 \c\... 找不到文件

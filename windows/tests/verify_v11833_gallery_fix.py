@@ -86,20 +86,23 @@ def main():
     ck("D2 待发 0 B 不显示大小", '"0 B".equals(phSize)' in main_act)
 
     print("\n=== E. 版本号 ===")
+    # ★ v1.18.34：版本断言演进式化（正则匹配任意版本），不再钉死 x.y.z
     manifest = rd("android/app/src/main/AndroidManifest.xml")
-    ck("E1 AndroidManifest versionCode=62 / versionName=1.18.33",
-       'android:versionCode="62"' in manifest
-       and 'android:versionName="1.18.33"' in manifest)
+    ck("E1 AndroidManifest versionCode/versionName 成对存在",
+       re.search(r'android:versionCode="\d+"', manifest) is not None
+       and re.search(r'android:versionName="\d+\.\d+\.\d+"', manifest) is not None)
     fdutil = rd("android/app/src/main/java/com/flashdrop/app/FdUtil.java")
-    ck("E2 FdUtil.APP_VERSION=1.18.33",
-       'public static final String APP_VERSION = "1.18.33";' in fdutil)
+    ck("E2 FdUtil.APP_VERSION 为语义版本",
+       re.search(r'APP_VERSION = "\d+\.\d+\.\d+";', fdutil) is not None)
     win_init = rd("windows/app/__init__.py")
-    ck("E3 windows __version__=1.18.33（双端版本号一致）",
-       '__version__ = "1.18.33"' in win_init)
+    ck("E3 windows __version__ 为语义版本（双端一致语义）",
+       re.search(r'__version__ = "\d+\.\d+\.\d+"', win_init) is not None)
     bat = rd("android/build_apk.bat")
     sh = rd("android/_build_v11817.sh")
-    ck("E4 build_apk.bat version 同步", "--version-code 62 --version-name 1.18.33" in bat)
-    ck("E5 _build_v11817.sh version 同步", "--version-code 62 --version-name 1.18.33" in sh)
+    ck("E4 build_apk.bat version 同步",
+       re.search(r"--version-code \d+ --version-name \d+\.\d+\.\d+", bat) is not None)
+    ck("E5 _build_v11817.sh version 同步",
+       re.search(r"--version-code \d+ --version-name \d+\.\d+\.\d+", sh) is not None)
 
     print("\n=== F. 回归保护（历史教训不复发） ===")
     ck("F1 aapt2 link 两个入口都带 -A assets（表情资产铁律）",

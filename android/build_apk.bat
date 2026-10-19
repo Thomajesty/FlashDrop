@@ -23,7 +23,7 @@ echo == 3. aapt2 link ==
 rem ★ -A "%SRC%\assets" 才会把 assets/ 打进 APK。
 rem   缺了它 assets/emoji_catalog.json 不会进包 → 表情面板读到空目录、
 rem   打开就是一块空白（v1.18.22~v1.18.28 实际踩坑：用户反馈"表情包不显示"）。
-call "%BT%\aapt2.exe" link -o "%BUILD%\unsigned.apk" -I "%PLAT%" --manifest "%SRC%\AndroidManifest.xml" "%BUILD%\res.zip" -A "%SRC%\assets" --java "%BUILD%\gen" --auto-add-overlay --min-sdk-version 24 --target-sdk-version 34 --version-code 62 --version-name 1.18.33 || goto :err
+call "%BT%\aapt2.exe" link -o "%BUILD%\unsigned.apk" -I "%PLAT%" --manifest "%SRC%\AndroidManifest.xml" "%BUILD%\res.zip" -A "%SRC%\assets" --java "%BUILD%\gen" --auto-add-overlay --min-sdk-version 24 --target-sdk-version 34 --version-code 63 --version-name 1.18.34 || goto :err
 
 echo == 4. javac ==
 dir /s /b "%SRC%\java\*.java" > "%BUILD%\sources.txt"
