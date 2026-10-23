@@ -72,20 +72,27 @@ def static_checks():
        "p.drawPixmap(full, self._canvas)" in snip)
 
     print("\n=== C. 版本号 ===")
+    # v1.18.35 起版本断言演进式化（正则任意版本号，勿钉死 x.y.z）
+    VER = r"\d+\.\d+\.\d+"
+    CODE = r"\d+"
     initpy = rd("windows/app/__init__.py")
-    ck("C1 windows __version__ = 1.18.34", '__version__ = "1.18.34"' in initpy)
+    ck("C1 windows __version__ 存在（x.y.z）",
+       re.search(r'__version__ = "%s"' % VER, initpy) is not None)
     fdutil = rd("android/app/src/main/java/com/flashdrop/app/FdUtil.java")
-    ck("C2 FdUtil.APP_VERSION = 1.18.34",
-       'public static final String APP_VERSION = "1.18.34";' in fdutil)
+    ck("C2 FdUtil.APP_VERSION 存在（x.y.z）",
+       re.search(r'public static final String APP_VERSION = "%s";' % VER,
+                 fdutil) is not None)
     manifest = rd("android/app/src/main/AndroidManifest.xml")
-    ck("C3 manifest 63 / 1.18.34",
-       'android:versionCode="63"' in manifest
-       and 'android:versionName="1.18.34"' in manifest)
+    ck("C3 manifest versionCode/versionName 同步存在",
+       re.search(r'android:versionCode="%s"' % CODE, manifest) is not None
+       and re.search(r'android:versionName="%s"' % VER, manifest) is not None)
     bat = rd("android/build_apk.bat")
     sh = rd("android/_build_v11817.sh")
     ck("C4 构建脚本 version 同步",
-       "--version-code 63 --version-name 1.18.34" in bat
-       and "--version-code 63 --version-name 1.18.34" in sh)
+       re.search(r"--version-code %s --version-name %s" % (CODE, VER), bat)
+       is not None
+       and re.search(r"--version-code %s --version-name %s" % (CODE, VER), sh)
+       is not None)
     ck("C5 aapt2 link 两个入口都带 -A assets（表情资产铁律）",
        '-A "%SRC%\\assets"' in bat and '-A "$BPW\\\\assets"' in sh)
 

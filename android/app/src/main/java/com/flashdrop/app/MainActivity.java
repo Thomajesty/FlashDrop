@@ -21,6 +21,7 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.AbsListView;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.BaseAdapter;
@@ -3226,11 +3227,26 @@ public class MainActivity extends Activity {
             xSlot.addView(x, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT));
-            // ★ v1.18.19：长按监听从下拉行**撤掉** —— v1.18.18 挂在这里后
-            //   用户反馈"下拉点击设备没有反应"（item 根视图挂 long-click
-            //   会改变 AbsListView 的触摸判定，部分 ROM 上吞掉单击）。
-            //   备注入口改挂收起态 Spinner 的长按（见 onCreate），下拉行
-            //   恢复 v1.18.17 的纯净触摸链路。
+            // ★ v1.18.35（用户需求"长按设备弹出改备注"）：长按下拉行 →
+            //   直接弹出**设备备注**编辑框（留空 = 清除，恢复自报名）。
+            //
+            //   挂到下拉列表本身的 onItemLongClick —— AbsListView 原生
+            //   长按机制，完全不碰行视图的触摸链路：
+            //   · v1.18.19 教训：行根挂 long-click 会让根变 clickable，
+            //     改变 AbsListView 触摸判定，吞掉整行单击；
+            //   · 行级 OnTouchListener 也不可行：非 clickable 行只能
+            //     收到 ACTION_DOWN，无法取消滚动、无法吞长按后的 UP。
+            //   原生机制由框架处理长按后的 click 抑制，零侵入。
+            //   parent 在下拉展开时就是 Spinner 内部的 DropDownListView。
+            if (parent instanceof AbsListView) {
+                ((AbsListView) parent).setOnItemLongClickListener((p, v, pos2, id3) -> {
+                    if (pos2 <= 0 || pos2 >= spinnerIds.size()) return false;
+                    String pid2 = spinnerIds.get(pos2);
+                    if (ALL_ID.equals(pid2)) return false;
+                    showAliasEditor(pid2, spinLabels.get(pos2));
+                    return true;
+                });
+            }
             return row;
         }
     }

@@ -1358,11 +1358,35 @@ class MainWindow(QMainWindow):
         return pid not in self.msgs or pid in self._partial
 
     def _ensure_loaded(self, pid, limit=None):
-        """加载设备历史；返回是否发生了加载（线程安全，由后台线程调用）"""
+        """加载设备历史；返回是否发生了加载（线程安全，由后台线程调用）
+
+        ★ v1.18.35 修复（用户反馈"给新连接的手机发消息/收文件，消息框都是
+          空的，但文件实际传过去了"）：旧实现 `self.msgs[pid] = msgs` 直接
+          **整体替换**列表 —— 懒加载在后台线程读盘期间，主线程实时收到/发出
+          的消息 append 在**旧列表对象**上，加载完成的一瞬被整体换掉。
+          首联设备的第一批收发（恰是触发懒加载的那一批）因此全部从消息框
+          消失；老设备早已加载完（_need_load=False）不会触发替换，所以
+          只有"新连接的设备"必现。
+          现改为**按消息身份合并**：磁盘读回的 + 加载期间内存里实时新增的，
+          双端去重后按时间排序，实时消息不再被冲掉。
+        """
         if not self._need_load(pid):
             return False
         msgs = self.history.load(pid, limit)
-        self.msgs[pid] = msgs
+        old = self.msgs.get(pid)
+        if old:
+            seen = set()
+            merged = []
+            for m in list(msgs) + list(old):
+                key = self._msg_identity(m)
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(m)
+            merged.sort(key=lambda x: x.get("ts", 0))
+            self.msgs[pid] = merged
+        else:
+            self.msgs[pid] = msgs
         self._partial.discard(pid)
         return True
 
@@ -1371,8 +1395,21 @@ class MainWindow(QMainWindow):
 
         - 收到 SHOW → 唤起主窗口
         - 收到 PING → 回 PONG（告诉新实例「我活着，别抢锁」）
+
+        ★ v1.18.35：main.py 的单实例锁在 bind 后**立即**起了
+          responder 线程应答 PING（消灭"已 bind 未应答"启动窗口期，
+          根治多开）。socket 只允许一个 reader —— 两个线程同时 recv
+          会瓜分数据报。因此这里不再自起新线程，只把 SHOW 回调注册进
+          responder（sock.fd_ipc_cb）；仅当锁 socket 无 responder 时
+          （测试直接构造 MainWindow 等）才走原有自起线程路径。
         """
         import socket as _socket
+
+        sock = self.ipc_sock
+        cb = getattr(sock, "fd_ipc_cb", None) if sock is not None else None
+        if cb is not None:
+            cb["show"] = self.ipcShow.emit
+            return
 
         def _loop():
             sock = self.ipc_sock
