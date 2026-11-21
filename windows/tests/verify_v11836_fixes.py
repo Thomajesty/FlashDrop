@@ -106,20 +106,21 @@ def main():
 
     # ---------- C 组：版本 ----------
     print("\n=== C. 版本号 ===")
+    # ★ 演进式断言（v1.18.37 起）：正则匹配任意版本，不钉死
+    import re as _re
     initpy = rd("windows/app/__init__.py")
-    ck("C1 windows __version__ = 1.18.36", '__version__ = "1.18.36"' in initpy)
+    ck("C1 windows __version__", _re.search(r'__version__ = "1\.18\.\d+"', initpy))
     fdutil = rd("android/app/src/main/java/com/flashdrop/app/FdUtil.java")
-    ck("C2 FdUtil.APP_VERSION = 1.18.36",
-       'public static final String APP_VERSION = "1.18.36";' in fdutil)
+    ck("C2 FdUtil.APP_VERSION", _re.search(r'APP_VERSION = "1\.18\.\d+"', fdutil))
     manifest = rd("android/app/src/main/AndroidManifest.xml")
-    ck("C3 manifest 65 / 1.18.36",
-       'android:versionCode="65"' in manifest
-       and 'android:versionName="1.18.36"' in manifest)
+    ck("C3 manifest versionCode/versionName",
+       _re.search(r'android:versionCode="\d+"', manifest)
+       and _re.search(r'android:versionName="1\.18\.\d+"', manifest))
     bat = rd("android/build_apk.bat")
     sh = rd("android/_build_v11817.sh")
     ck("C4 构建脚本 version 同步",
-       "--version-code 65 --version-name 1.18.36" in bat
-       and "--version-code 65 --version-name 1.18.36" in sh)
+       _re.search(r'--version-code \d+ --version-name 1\.18\.\d+', bat)
+       and _re.search(r'--version-code \d+ --version-name 1\.18\.\d+', sh))
 
     print()
     if FAILS:

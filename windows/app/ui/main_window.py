@@ -1986,7 +1986,34 @@ class MainWindow(QMainWindow):
         self._on_target_changed()
         # ★ v1.18.16：列表重建后 _rebuilding 拦住了信号，这里补一次按钮刷新
         self._update_del_sel_btn()
+        # ★ v1.18.37：待发送气泡一致性自愈。
+        #   用户反馈"对离线设备发送，待发送卡片没有了"——代码全路径
+        #   复现均正常（入队/渲染/刷新/懒加载/重试都验证过），但不能
+        #   排除某些时序竞态下气泡渲染被跳过。这里在每次设备列表刷新
+        #   后做一次幂等校验：队列里的每条待发都必须有对应气泡，
+        #   缺失即重建（_show_pending_msg 同 mid 先清后加，幂等）。
+        self._pending_self_heal()
         self._flush_pending()
+
+    def _pending_self_heal(self):
+        """待发送队列与气泡一致性校验：缺的补上，多的清掉（幂等）"""
+        try:
+            want = {e.get("mid") for e in self._pending_files}
+            have = {m.get("mid") for m in self.msgs.get(self.PENDING_PEER, [])}
+            if want == have:
+                return
+            # 重建全部（_show_pending_msg 内部按 mid 去重 + 重排）
+            lst = self.msgs.setdefault(self.PENDING_PEER, [])
+            lst[:] = [m for m in lst if m.get("mid") in want]
+            for e in self._pending_files:
+                self._show_pending_msg(e)
+            self._render_chat()
+        except Exception:
+            try:
+                import traceback
+                traceback.print_exc()
+            except Exception:
+                pass
 
     def _remember_known_peers(self, live: dict):
         """把当前在线设备写入配置的 known_peers（持久化，跨网络不丢）"""
@@ -2430,7 +2457,15 @@ class MainWindow(QMainWindow):
                 seen.add(id(m))
                 out.append(m)
         out.sort(key=lambda m: m.get("ts", 0))
-        return out[-300:]
+        # ★ v1.18.37：待发送卡片永不被历史窗口截掉。
+        #   pending 的 ts 是**原发送时刻**（重启后 _pending_load 原样恢复），
+        #   会话消息一多就会落进 [-300:] 窗口之外被挤掉 —— 用户看到的
+        #   "待发送卡片没有了"。pending 数量极小（队列上限），单独豁免。
+        pended = [m for m in out if m.get("state") == "pending"]
+        rest = [m for m in out if m.get("state") != "pending"]
+        out = (rest[-300:] + pended)
+        out.sort(key=lambda m: m.get("ts", 0))
+        return out
 
     def _chat_view_key(self):
         """当前视图的标识：选中了哪些设备 + 是否处于多选态"""
@@ -2456,7 +2491,7 @@ class MainWindow(QMainWindow):
             built_map = self.widgets_by_msg
             self.chat_vbox, self.widgets_by_msg = saved_vbox, saved_map
         self._chat_stack.addWidget(page)
-        mids = [id(m) for m in msgs]
+        mids = [self._msg_identity(m) for m in msgs]
         self._chat_pages[ckey] = (page, vbox, built_map, mids)
         self._chat_page_order = [k for k in self._chat_page_order if k != ckey]
         self._chat_page_order.append(ckey)
@@ -2503,7 +2538,14 @@ class MainWindow(QMainWindow):
         """
         msgs = self._visible_msgs()
         view_key = self._chat_view_key()
-        ids = [id(m) for m in msgs]
+        # ★ v1.18.37：页缓存 key 从 id(m) 换成 _msg_identity。
+        #   id() 在对象销毁后会被 CPython 复用——用户删除过消息后，
+        #   缓存页 key 里残留已 GC dict 的 id；新发的待发送消息恰复用
+        #   该 id 时 ckey 与旧缓存页撞车 → ① 分支切到没有新卡片的旧页，
+        #   且此后每次 _render_chat 都判"完全没变 → return"，新气泡
+        #   永远不渲染（用户反馈"对离线设备发送，待发送卡片没有了"）。
+        #   identity = (ts, mid/tid, dir, kind) 稳定唯一，不受 GC 影响。
+        ids = [self._msg_identity(m) for m in msgs]
         ckey = (view_key, tuple(ids))
 
         # ① 命中缓存 → 换页即可
