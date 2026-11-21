@@ -188,14 +188,16 @@ else:
 
 # ================= §E 版本号 + 打包铁律 =================
 print("=== §E 版本号 5 处 + 打包铁律回归 ===")
-ck("E1 windows/app/__init__.py = 1.18.35", '1.18.35' in INIT)
-ck("E2 FdUtil.APP_VERSION = 1.18.35", 'APP_VERSION = "1.18.35"' in FDUTIL)
-ck("E3 AndroidManifest versionCode=64", 'android:versionCode="64"' in MFEST)
-ck("E4 AndroidManifest versionName=1.18.35", 'android:versionName="1.18.35"' in MFEST)
-ck("E5 _build_v11817.sh version-code 64 / 1.18.35",
-   "--version-code 64 --version-name 1.18.35" in SH)
-ck("E6 build_apk.bat version-code 64 / 1.18.35",
-   "--version-code 64 --version-name 1.18.35" in BAT)
+# ★ 演进式断言（v1.18.36 起）：匹配任意 1.18.x / versionCode，不钉死版本
+import re as _re
+ck("E1 windows/app/__init__.py 版本号", _re.search(r'__version__ = "1\.18\.\d+"', INIT))
+ck("E2 FdUtil.APP_VERSION", _re.search(r'APP_VERSION = "1\.18\.\d+"', FDUTIL))
+ck("E3 AndroidManifest versionCode", _re.search(r'android:versionCode="\d+"', MFEST))
+ck("E4 AndroidManifest versionName", _re.search(r'android:versionName="1\.18\.\d+"', MFEST))
+ck("E5 _build_v11817.sh version 同步",
+   _re.search(r'--version-code \d+ --version-name 1\.18\.\d+', SH))
+ck("E6 build_apk.bat version 同步",
+   _re.search(r'--version-code \d+ --version-name 1\.18\.\d+', BAT))
 ck("E7 .sh 打包带 -A assets（v1.18.29 铁律）", '-A "$BPW\\\\assets"' in SH)
 ck("E8 .bat 打包带 -A assets（v1.18.29 铁律）", '-A "%SRC%\\assets"' in BAT)
 

@@ -159,6 +159,39 @@ class History:
             if m.get("kind") == "file" and m.get("state") in ACTIVE:
                 m["state"] = "failed"
                 m["reason"] = "应用重启，传输中断"
+        # ★ v1.18.36：按消息身份去重（存量脏数据清理）。
+        #   历史 bug（offer 退化 append + upsert 只替换首行）曾把同一次
+        #   接收落盘成 [done, started] 两行 —— 用户看到"一个文件两张
+        #   卡片"。磁盘修复后新数据不再重复，但旧 jsonl 里的幽灵行
+        #   还在；load 时同身份只保留一条，终态行优先（幽灵 started
+        #   若无终态伴随，会先被上面的 ACTIVE→failed 转换，保留后
+        #   至少呈现为明确的"已中断"而非卡死的传输中）。
+        TERMINAL = ("done", "ok", "failed", "fail", "refuse", "cancel")
+        grouped = {}
+        order = []
+        for m in msgs:
+            if m.get("kind") == "file":
+                key = (m.get("mid") or m.get("tid") or "",
+                       m.get("dir"), "file")
+            elif m.get("kind") == "text":
+                key = (m.get("mid") or "", m.get("dir"), "text")
+            else:
+                key = None
+            if key is None:
+                grouped[id(m)] = m
+                order.append(id(m))
+                continue
+            prev = grouped.get(key)
+            if prev is None:
+                grouped[key] = m
+                order.append(key)
+                continue
+            # 同身份：终态优先；都终态/都活跃 → 保留后出现的（更新）
+            p_t = prev.get("state") in TERMINAL
+            c_t = m.get("state") in TERMINAL
+            if c_t and not p_t:
+                grouped[key] = m
+        msgs = [grouped[k] for k in order]
         with self._lock:
             self._cache[peer_id] = list(msgs)
             self._cache_n[peer_id] = keep_n
@@ -225,9 +258,18 @@ class History:
                                 same = ((o.get("tid") or "") == key_tid
                                         and o.get("dir") == msg.get("dir")
                                         and o.get("kind") == msg.get("kind"))
-                            if same and not hit:
-                                keep.append(json.dumps(msg, ensure_ascii=False))
-                                hit = True
+                            # ★ v1.18.36：替换**所有**匹配行（旧实现只替换
+                            #   第一条，`if same and not hit`）。历史上
+                            #   offer 退化 append + started append 曾把同一
+                            #   tid 落盘成两行，替换只清第一行 → 残留一条
+                            #   幽灵 started = "一个文件两张卡片"。替换全部
+                            #   匹配行后，每次 upsert 还会顺手清掉存量重复。
+                            if same:
+                                if not hit:
+                                    keep.append(json.dumps(
+                                        msg, ensure_ascii=False))
+                                    hit = True
+                                # 后续重复行直接丢弃
                             else:
                                 keep.append(line)
                     if hit:

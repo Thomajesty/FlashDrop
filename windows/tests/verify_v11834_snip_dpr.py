@@ -124,10 +124,18 @@ def e2e_checks():
             time.sleep(0.1)
 
         canvas, origin = grab_virtual_desktop()
+        # ★ v1.18.36：多屏环境动态并集（单屏假设在双屏机器上必挂：
+        #   逻辑并集 = 各屏 geometry 求并，物理 = 并集 × dpr）
+        union = QRect()
+        for sc in app.screens():
+            union = union.united(sc.geometry())
+        exp_w = int(round(union.width() * dpr))
+        exp_h = int(round(union.height() * dpr))
         ck("D1 画布物理尺寸 = 逻辑并集 × dpr",
-           canvas.width() == int(s.geometry().width() * dpr)
-           and canvas.height() == int(s.geometry().height() * dpr),
-           "实际 %dx%d" % (canvas.width(), canvas.height()))
+           canvas.width() == exp_w and canvas.height() == exp_h,
+           "实际 %dx%d, 期望 %dx%d (并集 %dx%d 逻辑)"
+           % (canvas.width(), canvas.height(), exp_w, exp_h,
+              union.width(), union.height()))
         ck("D2 画布 DPR 标记 = %s" % dpr,
            abs((canvas.devicePixelRatio() or 1.0) - dpr) < 1e-6)
 

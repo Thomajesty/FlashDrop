@@ -2860,7 +2860,16 @@ class MainWindow(QMainWindow):
             if not m.get("_appended") and state != "offer":
                 m["_appended"] = True
                 self._append_msg(pid, m, notify=state in ("confirm", "done"))
-            self._refresh_msg(m)
+            # ★ v1.18.36：offer 状态不落盘。
+            #   旧实现 offer 也走 _refresh_msg → upsert：磁盘上还没有该
+            #   tid 的行 → upsert「命中失败退化为 append」把 offer 快照
+            #   写成第一行；随后 started 再 append 一行，upsert 只替换
+            #   第一行 → 终态后磁盘=[done, started] 两行 = 用户反馈的
+            #   "发一个文件变成两个卡片"（第二张永远是幽灵 started，
+            #   重启后还会显示成"已中断"）。已由 tests/repro_dup_card.py
+            #   双节点复现实锤。
+            if state != "offer":
+                self._refresh_msg(m)
         else:  # send
             m = self.out_by_tid.get(tid)
             if not m:
@@ -3264,8 +3273,18 @@ class MainWindow(QMainWindow):
             self._viewers = []
         v = ImageViewer(paths, idx, self)
         self._viewers.append(v)
-        v.finished.connect(lambda _r, vv=v: self._viewers.remove(vv)
-                           if vv in self._viewers else None)
+        # ★ v1.18.36 内存修复：关闭即销毁。
+        #   旧实现 finished 时只从 _viewers 摘引用，viewer 因 parent=self
+        #   与主窗口同寿 —— Canvas 里那张**原图 QPixmap**（一张 12MP 手机
+        #   照片 ARGB32 ≈ 48MB）永久常驻。用户反馈"内存占用有时候到
+        #   2000MB"的主要来源：双击看过的每张图都留一份，看到几十张
+        #   就涨到 GB 级。deleteLater 销毁 QDialog → Canvas → 场景 →
+        #   pixmap 整条链全部释放。
+        def _release_viewer(_r=None, vv=v):
+            if vv in self._viewers:
+                self._viewers.remove(vv)
+            vv.deleteLater()
+        v.finished.connect(_release_viewer)
         v.show()
         v.raise_()
         v.activateWindow()
