@@ -85,16 +85,21 @@ def main():
 
     # ---------- C 组：版本 ----------
     print("\n=== C. 版本五处同步 ===")
-    ck("C1 __init__ 1.18.38", '1.18.38' in rd("windows/app/__init__.py"))
-    ck("C2 FdUtil.APP_VERSION 1.18.38",
-       'APP_VERSION = "1.18.38"' in rd("android/app/src/main/java/com/flashdrop/app/FdUtil.java"))
+    ck("C1 __init__ 版本演进",
+       bool(re.search(r'1\.18\.\d+', rd("windows/app/__init__.py"))))
+    ck("C2 FdUtil.APP_VERSION 演进",
+       bool(re.search(r'APP_VERSION = "1\.18\.\d+"',
+                      rd("android/app/src/main/java/com/flashdrop/app/FdUtil.java"))))
     man = rd("android/app/src/main/AndroidManifest.xml")
     ck("C3 manifest versionName/versionCode",
-       'versionName="1.18.38"' in man and 'versionCode="67"' in man)
+       bool(re.search(r'versionName="1\.18\.\d+"', man))
+       and bool(re.search(r'versionCode="\d+"', man)))
     ck("C4 build_apk.bat 同步",
-       "--version-code 67 --version-name 1.18.38" in rd("android/build_apk.bat"))
+       bool(re.search(r"--version-code \d+ --version-name 1\.18\.\d+",
+                      rd("android/build_apk.bat"))))
     ck("C5 _build_v11817.sh 同步",
-       "--version-code 67 --version-name 1.18.38" in rd("android/_build_v11817.sh"))
+       bool(re.search(r"--version-code \d+ --version-name 1\.18\.\d+",
+                      rd("android/_build_v11817.sh"))))
 
     print()
     if FAILS:

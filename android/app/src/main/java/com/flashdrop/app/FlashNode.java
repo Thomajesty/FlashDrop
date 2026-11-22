@@ -124,6 +124,9 @@ public class FlashNode {
     private final Map<String, Peer> peers = new ConcurrentHashMap<>();
     private final Map<String, Conn> conns = new ConcurrentHashMap<>();   // peerId -> Conn
     private final Map<String, Inbound> inbounds = new ConcurrentHashMap<>(); // peerId|tid -> Inbound
+    /** ★ v1.18.39：最近完整接收幂等表 peerId|tid -> 保存路径（容量 128，FIFO 淘汰）。
+     *  发送端补发重试（同 tid）命中即直接回 FILE_OK，接收端不再整份重收。 */
+    private final Map<String, String> recvDone = new ConcurrentHashMap<>();
 
     // ================= v1.18.18：断点续传与传输重试 =================
     /** 单目标最大重试次数（不含首次） */
@@ -1135,12 +1138,53 @@ public class FlashNode {
 
     private void dropSlot(Map<String, Object[]> map, String key) { map.remove(key); }
 
+    /**
+     * ★ v1.18.39：readySlot 与 okSlot **竞速**等待（阻塞，最多 timeoutMs）。
+     * 接收端幂等直答 FILE_OK 时不会再有 RECV_READY —— ok 先到先返回。
+     * 返回先完成者的 {state, extra}；都没等到返回 {"timeout", null}。
+     * REFUSE/CANCEL 会同时解两个槽，任一返回结果一致。
+     */
+    private static Object[] raceReadyOk(Object[] readySlot, Object[] okSlot,
+                                        long timeoutMs) {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            Object[] rv = null, ov = null;
+            synchronized (readySlot) { if (readySlot[0] != null) rv = readySlot; }
+            synchronized (okSlot) { if (okSlot[0] != null) ov = okSlot; }
+            if (ov != null) return new Object[]{ov[0], ov[1]};
+            if (rv != null) return new Object[]{rv[0], rv[1]};
+            try { Thread.sleep(80); } catch (InterruptedException e) {
+                return new Object[]{"timeout", null};
+            }
+        }
+        return new Object[]{"timeout", null};
+    }
+
     // ============================ 接收 ============================
 
     private void onFileStart(Conn conn, JSONObject o) {
         String tid = o.optString("tid");
         if (tid.isEmpty()) return;
         String key = conn.peerId + "|" + tid;
+        // ★ v1.18.39：同 tid 最近已完整接收 → 幂等回 FILE_OK，不再重收。
+        //   场景：发送端补发队列重试时 FILE_OK 回程丢失/发送端等 OK 超时，
+        //   下一轮 FILE_START 到达 —— 没有此检查会整份重收（重复文件）。
+        String prevSaved = recvDone.get(key);
+        if (prevSaved != null) {
+            Inbound fake = new Inbound();
+            fake.peerId = conn.peerId;
+            fake.tid = tid;
+            fake.name = FdUtil.safeFileName(o.optString("name", "file"));
+            fake.rawName = o.optString("name", "");
+            fake.size = o.optLong("size", 0);
+            fake.mime = o.optString("mime", "application/octet-stream");
+            fake.scheme = o.optString("scheme", "");
+            emitRecv(fake, "done", null, null, prevSaved, prevSaved, 0, 0);
+            try { sendJson(conn, FdProto.obj("type", FdProto.T_FILE_OK, "tid", tid,
+                    "path", prevSaved, "verified", true, "size", fake.size)); }
+            catch (Exception ignored) {}
+            return;
+        }
         if (inbounds.containsKey(key)) return;
         Inbound ib = new Inbound();
         ib.peerId = conn.peerId;
@@ -1432,6 +1476,16 @@ public class FlashNode {
         // 并没有验证。用户实测过"发送端显示已发送、接收端显示失败"，根因之一
         // 就是这类假成功。这里回读一次，把真实结果一起回给发送方。
         boolean verified = verifySavedFile(ib, saved);
+        // ★ v1.18.39：登记"最近完整接收"（同 pid|tid 幂等表，容量 128）。
+        //   发送端待发队列重试（v1.18.39 起同 tid 补发）若 FILE_OK 回程丢失，
+        //   再次 FILE_START 命中此表直接回 OK，接收端不再整份重收。
+        if (verified) {
+            recvDone.put(conn.peerId + "|" + tid, saved[0]);
+            if (recvDone.size() > 128) {
+                String first = recvDone.keySet().iterator().next();
+                recvDone.remove(first);
+            }
+        }
         try {
             sendJson(conn, FdProto.obj("type", FdProto.T_FILE_OK, "tid", tid,
                     "path", saved[0],
@@ -1811,15 +1865,29 @@ public class FlashNode {
      */
     public java.util.Map<String, String> sendFileSync(List<String> targetIds,
                                                       List<String> paths) {
+        return sendFileSync(targetIds, paths, null);
+    }
+
+    /**
+     * ★ v1.18.39：带稳定 tid 种子的同步发送（待发队列补发专用）。
+     * 每个文件 tid = tidSeed + "-" + 序号，补发轮次间固定 —— 接收端凭
+     * 同 tid 幂等应答，FILE_OK 丢失后的重试不会让对端重复收文件。
+     * tidSeed 为 null 时保持旧行为（每次随机 tid，一次性发送场景）。
+     */
+    public java.util.Map<String, String> sendFileSync(List<String> targetIds,
+                                                      List<String> paths,
+                                                      String tidSeed) {
         java.util.Map<String, String> res = new java.util.HashMap<>();
         if (targetIds == null || paths == null) return res;
         for (String pid : targetIds) res.put(pid, "fail");
-        for (String path : paths) {
+        for (int fi = 0; fi < paths.size(); fi++) {
+            String path = paths.get(fi);
             String name = fileNameOf(path);
             if (name == null) continue;
             long size = fileSizeOf(path);
             if (size < 0) continue;
-            String tid = FdUtil.shortUid();
+            String tid = (tidSeed != null && !tidSeed.isEmpty())
+                    ? tidSeed + "-" + fi : FdUtil.shortUid();
             String mime = FdUtil.guessMime(name);
             sendInfo.put(tid, FdProto.obj("name", name, "size", size, "mime", mime,
                     "targets", new JSONArray(targetIds), "src", path));
@@ -1851,13 +1919,21 @@ public class FlashNode {
     }
 
     /** 发送文件（路径或 content Uri 字符串） */
-    public void sendFiles(List<String> targetIds, List<String> paths) {        pool.execute(() -> {
-            for (String path : paths) {
+    public void sendFiles(List<String> targetIds, List<String> paths) {
+        sendFiles(targetIds, paths, null);
+    }
+
+    /** ★ v1.18.39：带稳定 tid 种子的异步发送（待发队列手动立即发送用） */
+    public void sendFiles(List<String> targetIds, List<String> paths,
+                          String tidSeed) {        pool.execute(() -> {
+            for (int fi = 0; fi < paths.size(); fi++) {
+                String path = paths.get(fi);
                 String name = fileNameOf(path);
                 if (name == null) continue;
                 long size = fileSizeOf(path);
                 if (size < 0) continue;
-                String tid = FdUtil.shortUid();
+                String tid = (tidSeed != null && !tidSeed.isEmpty())
+                        ? tidSeed + "-" + fi : FdUtil.shortUid();
                 String mime = FdUtil.guessMime(name);
                 JSONArray targets = new JSONArray(targetIds);
                 sendInfo.put(tid, FdProto.obj("name", name, "size", size, "mime", mime,
@@ -2001,7 +2077,14 @@ public class FlashNode {
                     // ★ v1.18.18：声明支持带块号分块 + 本次是第几次尝试
                     "idx", 1,
                     "attempt", attempt));
-            Object[] r = waitSlot(readySlot, 45000);
+            // ★ v1.18.39：与 okSlot **竞速** —— 接收端"最近已完整接收"该 tid
+            //   时会跳过 RECV_READY 直接幂等回 FILE_OK（补发重试场景）。
+            //   只等 readySlot 会傻等 45s 超时再重试，补发永远发不完。
+            Object[] r = raceReadyOk(readySlot, okSlot, 45000);
+            if ("ok".equals(r[0])) {
+                // 幂等直答：对方已收过该 tid → 直接当发送成功收尾
+                return new Object[]{"ok", "", Boolean.FALSE};
+            }
             // 不可重试：对方明确拒绝 / 已取消
             if ("refuse".equals(r[0])) return new Object[]{"fail", "对方拒绝接收", Boolean.FALSE};
             if ("cancel".equals(r[0])) return new Object[]{"fail", "对方已取消", Boolean.FALSE};

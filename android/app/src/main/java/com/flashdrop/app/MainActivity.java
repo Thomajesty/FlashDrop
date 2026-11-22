@@ -4873,7 +4873,13 @@ public class MainActivity extends Activity {
             indexMsg(m);
             persist(m);
         } else {
-            FlashApp.get().node().sendFiles(targets, p.uris);
+            // ★ v1.18.39：手动立即发送也用稳定 tidSeed（与自动补发同口径），
+            //   发送失败留在队列后，后续自动补发命中对端幂等，不会重收
+            if (p.tidSeed == null || p.tidSeed.isEmpty()) {
+                p.tidSeed = FdUtil.shortUid();
+                FlashApp.get().savePendingSends();
+            }
+            FlashApp.get().node().sendFiles(targets, p.uris, p.tidSeed);
         }
         ps.remove(idx);
         FlashApp.get().savePendingSends();

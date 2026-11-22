@@ -103,9 +103,11 @@ class NodeBridge(QObject):
     def send_text_sync(self, targets, text, timeout=45.0):
         return self.node.send_text_sync(targets, text, timeout)
 
-    def send_files_sync(self, targets, paths, timeout=1800.0):
-        """★ v1.18.20：同步文件发送（待发队列补发用，确认送达才移除条目）"""
-        return self.node.send_files_sync(targets, paths, timeout)
+    def send_files_sync(self, targets, paths, timeout=1800.0, tid_seed=None):
+        """★ v1.18.20：同步文件发送（待发队列补发用，确认送达才移除条目）
+        ★ v1.18.39：tid_seed —— 补发轮次间复用同一组 tid（接收端幂等防重收）"""
+        return self.node.send_files_sync(targets, paths, timeout,
+                                         tid_seed=tid_seed)
 
     def emit_pending_flush_done(self, payload: dict):
         """工作线程调用：把补发结果投递回 UI 线程"""

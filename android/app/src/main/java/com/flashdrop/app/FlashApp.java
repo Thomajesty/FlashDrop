@@ -204,6 +204,14 @@ public class FlashApp extends Application {
         public int attempt = 0;
         /** ★ v1.18.18：最近一次补发失败原因（供管理窗口显示"为什么还在队列里"） */
         public String lastError = "";
+        /**
+         * ★ v1.18.39：稳定传输 id 种子（随队列持久化）。
+         * 旧实现每轮补发 sendFileSync 都生成全新 tid：对端其实已把文件收下
+         * 但 FILE_OK 回程丢失时，条目按设计保留重试，下一轮新 tid 让对端的
+         * 「同 tid 幂等应答」失效 → 接收端真收第二次（多一张卡+一份文件）。
+         * 固定种子后每轮 tid = tidSeed + "-" + 文件序号，重试命中对端幂等。
+         */
+        public String tidSeed = "";
         public PendingSend(List<String> u, List<String> t) { this(u, t, null, false); }
         public PendingSend(List<String> u, List<String> t, String text, boolean broadcast) {
             uris = u == null ? new ArrayList<>() : u;
@@ -268,6 +276,10 @@ public class FlashApp extends Application {
                 if (p.attempt > 0) o.put("attempt", p.attempt);
                 if (p.lastError != null && !p.lastError.isEmpty())
                     o.put("last_error", p.lastError);
+                // ★ v1.18.39：tidSeed 必须跨重启稳定 —— 不落盘的话重启后
+                //   新种子照样是新 tid，幂等防线等于没修
+                if (p.tidSeed != null && !p.tidSeed.isEmpty())
+                    o.put("tid_seed", p.tidSeed);
                 arr.put(o);
             }
             prefs.setPendingSends(arr.toString());
@@ -290,6 +302,7 @@ public class FlashApp extends Application {
                     PendingSend ps = new PendingSend(u, t, text, bc);
                     ps.attempt = o.optInt("attempt", 0);
                     ps.lastError = o.optString("last_error", "");
+                    ps.tidSeed = o.optString("tid_seed", "");
                     pendingSends.add(ps);
                 }
             }
@@ -395,8 +408,16 @@ public class FlashApp extends Application {
                             //   与 v1.18.15 修复前的文本待发同款 bug。
                             //   sendFileSync 内部含最多 3 次自动重试（断点续传），
                             //   全部目标都失败时条目保留，记下原因与次数供 UI 显示。
+                            // ★ v1.18.39：稳定 tidSeed —— 每轮补发 tid 固定，
+                            //   FILE_OK 丢失但对端已收下时下一轮命中对端幂等，
+                            //   不再"补发一次对方多收一张卡+一份文件"。
+                            if (ps.tidSeed == null || ps.tidSeed.isEmpty()) {
+                                ps.tidSeed = FdUtil.shortUid();
+                                savePendingSends();
+                            }
+                            final String seed = ps.tidSeed;
                             java.util.Map<String, String> fres =
-                                    node().sendFileSync(targets, ps.uris);
+                                    node().sendFileSync(targets, ps.uris, seed);
                             boolean fileOk = false;
                             StringBuilder errs = new StringBuilder();
                             for (String pid : targets) {

@@ -215,8 +215,9 @@ class FlashNode:
         self.peers: dict = {}          # id -> Peer
         self.conns: dict = {}          # peer_id -> Conn
         self.inbounds: dict = {}       # (peer_id, tid) -> Inbound
-        # ★ v1.18.19：最近完整接收的传输（tid -> (path, size)），
-        # 供 FILE_OK 丢失后的重试幂等应答（容量 128，FIFO 淘汰）
+        # ★ v1.18.19：最近完整接收的传输（(peer_id, tid) -> (path, size)），
+        # 供 FILE_OK 丢失后的重试幂等应答（容量 128，FIFO 淘汰；
+        # ★ v1.18.39 改保留式应答 + 键带 peer_id）
         self._recent_done = {}
         self.out_waiters: dict = {}    # (peer_id, tid) -> Future（FILE_OK/FAIL/REFUSE/CANCEL）
         self.ready_waiters: dict = {}  # (peer_id, tid) -> Future（RECV_READY/REFUSE）
@@ -1066,7 +1067,10 @@ class FlashNode:
         # 300s 等待超时后同 tid 重试；不处理的话接收端会整文件再收一遍
         # （重复落盘 + 接收端出现第二条气泡）。
         # 注意不能用 inbounds 判定：成功路径会把 inbound 从注册表 pop 掉。
-        prev = self._recent_done.pop(tid, None)
+        # ★ v1.18.39：改保留式 FIFO（旧实现 pop 一次性应答）——同 tid 第
+        #   3 次及以后的补发重试也要幂等（每轮 OK 都可能再丢一次）；键改
+        #   (peer_id, tid) 防跨设备撞 tid。
+        prev = self._recent_done.get((conn.peer_id, tid))
         if prev is not None:
             try:
                 await conn.send_json(
@@ -1293,9 +1297,13 @@ class FlashNode:
             return
         R.drop_resume_state(self.cfg.cache_dir, ib.tid)
         self.inbounds.pop((conn.peer_id, tid), None)
-        # ★ v1.18.19：登记“最近完整接收”，供发送端 FILE_OK 丢失后的
-        # 同 tid 重试做幂等应答（不再重复接收）
-        self._recent_done[tid] = (dest, ib.meta["size"])
+        # ★ v1.18.19：登记"最近完整接收"，供发送端 FILE_OK 丢失后的
+        #   同 tid 重试做幂等应答（不再重复接收）
+        # ★ v1.18.39：键改 (peer_id, tid) + 保留式 + 容量 128 FIFO 淘汰
+        self._recent_done[(conn.peer_id, tid)] = (dest, ib.meta["size"])
+        if len(self._recent_done) > 128:
+            first = next(iter(self._recent_done))
+            self._recent_done.pop(first, None)
         if len(self._recent_done) > 128:
             try:
                 self._recent_done.pop(next(iter(self._recent_done)))
@@ -1462,7 +1470,7 @@ class FlashNode:
         self._post(self._send_files_task(list(target_ids), list(paths)))
 
     def send_files_sync(self, target_ids: list, paths: list,
-                        timeout: float = 1800.0):
+                        timeout: float = 1800.0, tid_seed: str = None):
         """★ v1.18.20：同步发送文件并等到每个目标都有结论。
 
         与 send_files 的区别：send_files 起协程立即返回（fire-and-forget），
@@ -1471,17 +1479,25 @@ class FlashNode:
         （TCP 未就绪等），条目已被移除、无重试 → 内容丢失；且与用户手动
         重发并存时会出现两个气泡。
 
+        ★ v1.18.39：tid_seed —— 待发队列补发的**稳定传输 id 种子**。
+          旧实现每轮补发都 gen_uid() 生成全新 tid：对端其实已把文件收下
+          但 FILE_OK 在回程丢失（或发送端等 OK 超时）时，队列条目按设计
+          保留重试，下一轮新 tid 让对端的「同 tid 幂等应答」（v1.18.19）
+          完全失效 → 接收端**真收第二次**：多一张卡片 + 多一份文件。
+          传入稳定种子后，同一队列条目每轮补发 tid 固定为 f"{seed}-{i}"，
+          接收端凭同 tid 直接回 FILE_OK（已收过），不再重复落盘。
+          必须在工作线程调用（内部阻塞等待，同 send_text_sync 模式）。
+
         返回 {peer_id: "ok"|"fail"} —— 任一文件送达即记 ok。
-        必须在工作线程调用（内部阻塞等待，同 send_text_sync 模式）。
         """
         fut = asyncio.run_coroutine_threadsafe(
-            self._send_files_sync_task(list(target_ids), list(paths)),
+            self._send_files_sync_task(list(target_ids), list(paths), tid_seed),
             self.loop)
         return fut.result(timeout=timeout)
 
-    async def _send_files_sync_task(self, target_ids, paths):
+    async def _send_files_sync_task(self, target_ids, paths, tid_seed=None):
         results = {}
-        for path in paths:
+        for i, path in enumerate(paths):
             try:
                 if not os.path.isfile(path):
                     continue
@@ -1489,7 +1505,9 @@ class FlashNode:
                 name = os.path.basename(path)
             except Exception:
                 continue
-            tid = util.gen_uid()
+            # ★ v1.18.39：带种子时同一队列条目每轮补发 tid 固定（接收端幂等）；
+            #   不带种子（一次性同步发送）保持旧行为随机 tid。
+            tid = (f"{tid_seed}-{i}" if tid_seed else util.gen_uid())
             mime = util.guess_mime(name)
             self._send_info[tid] = {"name": name, "size": size, "mime": mime,
                                     "targets": list(target_ids),
@@ -1598,10 +1616,36 @@ class FlashNode:
                                   "attempt": attempt,
                                   "scheme": self.cfg["bubble_scheme"]})
             # 等待对方就绪（自动接收时立即回；手动确认时等用户）
-            try:
-                res = await asyncio.wait_for(ready_fut, RECV_CONFIRM_TTL + 10.0)
-            except asyncio.TimeoutError:
+            # ★ v1.18.39：与 ok_fut **竞速** —— 接收端"最近已完整接收"该 tid
+            #   时会跳过 RECV_READY 直接幂等回 FILE_OK（补发重试场景）。
+            #   只等 ready 会傻等 45s 超时再无限重试，表现为"补发永远发不完"。
+            ready_task = asyncio.ensure_future(ready_fut)
+            ok_task = asyncio.ensure_future(ok_fut)
+            done_set, _pend = await asyncio.wait(
+                {ready_task, ok_task}, timeout=RECV_CONFIRM_TTL + 10.0,
+                return_when=asyncio.FIRST_COMPLETED)
+            if not done_set:
+                ready_task.cancel()
+                ok_task.cancel()
                 return ("fail", "等待对方确认超时", True)
+            if ok_task in done_set and ok_task.exception() is None \
+                    and ok_task.result()[0] == "ok" and not ready_task.done():
+                # 幂等直答：对方已收过该 tid → 直接当发送成功收尾
+                ready_task.cancel()
+                return ("ok", "", False)
+            if ready_task not in done_set:
+                # ready 未完成但 ok 先到（理论上 REFUSE/CANCEL 会同时解两个）
+                try:
+                    st0, ex0 = ok_task.result()
+                except Exception as e0:
+                    return ("fail", f"连接中断: {e0}", True)
+                if st0 == "refuse":
+                    return ("fail", ex0 or "对方拒绝接收", False)
+                if st0 == "cancel":
+                    return ("fail", ex0 or "对方已取消", False)
+                return ("fail", ex0 or "对方接收失败", True)
+            res = ready_task.result()
+            # 注意：ok_task 不能 cancel（会连坐取消 ok_fut）；后面继续用 ok_fut
             if res[0] != "ready":
                 # REFUSE / CANCEL：对方明确不要了，重试无意义
                 return ("fail", "对方拒绝接收" if res[0] == "refuse" else "对方已取消",

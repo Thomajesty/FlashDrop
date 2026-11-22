@@ -2905,7 +2905,22 @@ class MainWindow(QMainWindow):
         if kind == "recv":
             key = (pid, tid)
             m = self.in_by_tid.get(key)
-            if not m:
+            if m is None:
+                # ★ v1.18.39：内存索引未命中时回扫 msgs 尾部找同 tid 旧卡。
+                #   场景：本机重启后 in_by_tid 清空，而发送端待发队列按
+                #   稳定 tid 补发同一文件（v1.18.39）—— 不回扫就会 new 出
+                #   第二张同 tid 卡片（磁盘 upsert 只保一行，界面却显示
+                #   两张直到下次重启）。对齐安卓端 v1.13.0 的同款防御：
+                #   「以 msgs 列表为唯一事实源」。
+                for x in (self.msgs.get(pid) or [])[-50:]:
+                    if x.get("tid") == tid and x.get("dir") == "in" \
+                            and x.get("kind") == "file":
+                        m = x
+                        # 已在 msgs 里 → 不再走 _append_msg（否则同卡双气泡）
+                        m["_appended"] = True
+                        self.in_by_tid[key] = m
+                        break
+            if m is None:
                 m = {"kind": "file", "dir": "in", "peer_id": pid,
                      "peer_name": e.get("name"), "tid": tid,
                      "file": e.get("file"), "size": e.get("size"),
@@ -3690,8 +3705,15 @@ class MainWindow(QMainWindow):
                         #   TCP 未就绪等），内容丢失；且与用户手动重发并存时
                         #   出现两个气泡（用户反馈的"多选发送偶发显示两遍"）。
                         #   send_files_sync 内部已含每目标自动重试（断点续传）。
+                        # ★ v1.18.39：传 tid_seed=entry["mid"] —— 补发轮次间
+                        #   复用同一组 tid。旧实现每轮全新 tid，对端「同 tid
+                        #   幂等应答」失效：FILE_OK 丢失/超时但对端已收下时，
+                        #   下一轮补发让对端**真收第二次**（多一张卡片+一份
+                        #   文件，用户实测 attempt=57 的队列就是 57 次风险）。
                         try:
-                            fres = self.bridge.send_files_sync(targets, paths)
+                            fres = self.bridge.send_files_sync(
+                                targets, paths,
+                                tid_seed=entry.get("mid") or util.gen_uid())
                         except Exception as e:
                             _keep(entry, f"发送异常: {e}")
                             continue
