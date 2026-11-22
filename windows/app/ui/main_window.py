@@ -2457,19 +2457,19 @@ class MainWindow(QMainWindow):
                 seen.add(id(m))
                 out.append(m)
         out.sort(key=lambda m: m.get("ts", 0))
-        # ★ v1.18.37：待发送卡片永不被历史窗口截掉。
-        #   pending 的 ts 是**原发送时刻**（重启后 _pending_load 原样恢复），
-        #   会话消息一多就会落进 [-300:] 窗口之外被挤掉 —— 用户看到的
-        #   "待发送卡片没有了"。pending 数量极小（队列上限），单独豁免。
+        # ★ v1.18.40：pending 恒排尾部（去掉旧实现的二次 sort）。
+        #   pending 卡的 ts 是**原发送时刻**——队列挂得越久 ts 越旧，
+        #   二次 sort 会把刚转正/仍在等待的卡片排到**最顶部**（用户截图
+        #   反馈"发送内容没有按最新的显示到最底部 下面一大片空白"）。
+        #   正确语义：待发送是用户**最近一次操作**，永远显示在最底部。
         pended = [m for m in out if m.get("state") == "pending"]
         rest = [m for m in out if m.get("state") != "pending"]
         # ★ v1.18.38：渲染窗口 300 → 200。
         #   实测（tests/profile_memory_v11838.py）每个气泡控件 ≈0.4MB 私有
         #   内存（QSS 级联 + 控件树），300 条 ≈120MB；200 条 ≈80MB，
         #   配合页缓存上限下调（_CHAT_PAGE_CAP）显著压低常驻内存。
-        out = (rest[-200:] + pended)
-        out.sort(key=lambda m: m.get("ts", 0))
-        return out
+        rest.sort(key=lambda m: m.get("ts", 0))
+        return rest[-200:] + pended
 
     def _chat_view_key(self):
         """当前视图的标识：选中了哪些设备 + 是否处于多选态"""
@@ -2897,6 +2897,50 @@ class MainWindow(QMainWindow):
                 m["state"] = "ok"
                 self._refresh_msg(m)
 
+    def _consume_matching_pending(self, m: dict):
+        """★ v1.18.40：发送成功后摘除同内容的待发条目。
+
+        匹配口径（宁可不摘绝不误摘）：文件条目需 目标相交 + 文件名相同
+        + 大小相同；文本条目需 目标相交 + 文本完全一致。摘除后同步
+        清掉 PENDING_PEER 下的 pending 气泡并刷新渲染。
+        """
+        try:
+            changed = False
+            tg_m = set(m.get("targets") or [])
+            if not tg_m and m.get("peer_id"):
+                tg_m = {m.get("peer_id")}
+            for e in list(self._pending_files):
+                tg_e = set(e.get("targets") or [])
+                if tg_e and not (tg_e & tg_m):
+                    continue
+                if self._queue_kind(e) == "text":
+                    continue
+                fsize = m.get("size")
+                fname = (m.get("file") or "").lower()
+                hit = False
+                for p in (e.get("paths") or []):
+                    try:
+                        if os.path.basename(p).lower() == fname and (
+                                fsize is None or
+                                os.path.getsize(p) == fsize):
+                            hit = True
+                            break
+                    except OSError:
+                        continue
+                if hit:
+                    self._pending_files.remove(e)
+                    changed = True
+            if changed:
+                self.cfg["pending_files"] = self._pending_files
+                self._pending_self_heal()
+                self._pending_btn_refresh()
+        except Exception:
+            try:
+                import traceback
+                traceback.print_exc()
+            except Exception:
+                pass
+
     def _on_transfer(self, e: dict):
         kind = e.get("kind")
         tid = e.get("tid")
@@ -2920,6 +2964,24 @@ class MainWindow(QMainWindow):
                         m["_appended"] = True
                         self.in_by_tid[key] = m
                         break
+            if m is None:
+                # ★ v1.18.40：内容级兜底 —— 旧版对端（未升级 v1.18.39）
+                #   的待发队列补发每轮换 tid，同 tid 幂等拦不住重复投递。
+                #   3 分钟窗口内同 peer+同名+同大小的**已完成**接收卡视为
+                #   同一传输，复用旧卡（仅 done/ok 终态事件才合并，
+                #   传输中事件正常建卡；对齐"宁可漏拦绝不误拦"）。
+                if state in ("done", "ok"):
+                    now_ms = int(time.time() * 1000)
+                    for x in (self.msgs.get(pid) or [])[-50:]:
+                        if (x.get("dir") == "in" and x.get("kind") == "file"
+                                and x.get("state") == "done"
+                                and (x.get("file") or "") == (e.get("file") or "")
+                                and x.get("size") == e.get("size")
+                                and now_ms - (x.get("ts") or 0) < 180_000):
+                            m = x
+                            m["_appended"] = True
+                            self.in_by_tid[key] = m
+                            break
             if m is None:
                 m = {"kind": "file", "dir": "in", "peer_id": pid,
                      "peer_name": e.get("name"), "tid": tid,
@@ -3023,6 +3085,13 @@ class MainWindow(QMainWindow):
                     m["state"] = state
                 if state in ("failed", "refused", "cancelled"):
                     m["reason"] = e.get("reason")
+            # ★ v1.18.40：发送成功后摘除同内容的待发条目（防双发双卡）。
+            #   场景：用户先对离线设备发送（入队等补发），设备上线后用户
+            #   没等自动补发就手动再发一次 —— 队列条目仍在，周期补发会把
+            #   同一文件再发一遍（两张「已送达」卡 + 对端收两份）。
+            #   "ok" 兜底：out_by_tid 失同步时首个事件直接建卡的边界态。
+            if m.get("state") in ("done", "ok"):
+                self._consume_matching_pending(m)
             self._refresh_msg(m)
 
     # ---- 气泡按钮回调 ----

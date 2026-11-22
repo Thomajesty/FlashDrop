@@ -304,7 +304,10 @@ def group_b(tmp):
         n3 = len([f for f in os.listdir(save_b) if not f.endswith(".part")])
         ck("B2 接收目录仍 1 个文件", n3 == 1, f"got {n3}")
 
-        # ---- B3: 不带种子的一次性同步发送，tid 每次随机（旧行为）----
+        # ---- B3: 不带种子的一次性同步发送，tid 每次随机 ----
+        # ★ v1.18.40 演进：node 层新增内容级幂等（peer+name+size 5 分钟
+        #   窗口）——同内容连发第二次直接 duplicate OK，不再落盘、不再
+        #   产生第二个 done 事件（旧版对端补发换 tid 的重复投递被拦）。
         r4 = a.send_files_sync([b.device_id], [src], timeout=30)
         r5 = a.send_files_sync([b.device_id], [src], timeout=30)
         ck("B3 两次无种子发送均 ok",
@@ -312,9 +315,11 @@ def group_b(tmp):
         done_tids = [e.get("tid") for e in evB.recv_events()
                      if e.get("state") == "done"
                      and e.get("tid") not in (tid_expect,)]
-        ck("B3 无种子 tid 互不相同（旧行为保留）",
-           len(set(done_tids)) == len(done_tids) and len(done_tids) >= 2,
-           str(done_tids))
+        # ★ v1.18.40 演进：B 组前序步骤可能已登记过同内容 → B3 两次
+        #   发送全部被内容级幂等静默应答（0 个 done）或仅首次落盘
+        #   （1 个 done）。核心断言：绝不出现 ≥2 份。
+        ck("B3 同内容连发绝不重复落盘（v1.18.40 内容级幂等）",
+           len(done_tids) <= 1, str(done_tids))
     finally:
         stop_nodes(a, b)
         time.sleep(0.2)

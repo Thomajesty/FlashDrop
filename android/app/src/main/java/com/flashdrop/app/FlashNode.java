@@ -127,6 +127,11 @@ public class FlashNode {
     /** ★ v1.18.39：最近完整接收幂等表 peerId|tid -> 保存路径（容量 128，FIFO 淘汰）。
      *  发送端补发重试（同 tid）命中即直接回 FILE_OK，接收端不再整份重收。 */
     private final Map<String, String> recvDone = new ConcurrentHashMap<>();
+    /** ★ v1.18.40：内容级幂等表 peerId|name|size -> 完成时刻(ms)。
+     *  旧版对端（未升级 v1.18.39）补发每轮换 tid，同 tid 表拦不住 ——
+     *  5 分钟内同设备+同名+同大小的重复投递直接幂等回 OK 不落盘。
+     *  同名同大小极大概率同内容，误拦丢的也是重复内容，无感。 */
+    private final Map<String, Long> recvDoneContent = new ConcurrentHashMap<>();
 
     // ================= v1.18.18：断点续传与传输重试 =================
     /** 单目标最大重试次数（不含首次） */
@@ -1185,6 +1190,20 @@ public class FlashNode {
             catch (Exception ignored) {}
             return;
         }
+        // ★ v1.18.40：内容级幂等 —— 同 peer+同名+同大小 5 分钟内已完整
+        //   接收过 → 幂等回 FILE_OK 不落盘不建卡不 emit（对齐 Windows 端：
+        //   只应答发送方，UI 保持一张卡）。拦旧版对端（未升级 v1.18.39）
+        //   补发换 tid 造成的重复投递（用户实测同一文件收两份）。
+        String cname = FdUtil.safeFileName(o.optString("name", "file"));
+        long csize = o.optLong("size", 0);
+        Long cprev = recvDoneContent.get(conn.peerId + "|" + cname + "|" + csize);
+        if (cprev != null
+                && System.currentTimeMillis() - cprev < 5 * 60 * 1000L) {
+            try { sendJson(conn, FdProto.obj("type", FdProto.T_FILE_OK, "tid", tid,
+                    "path", "", "verified", true, "size", csize, "duplicate", true)); }
+            catch (Exception ignored) {}
+            return;
+        }
         if (inbounds.containsKey(key)) return;
         Inbound ib = new Inbound();
         ib.peerId = conn.peerId;
@@ -1484,6 +1503,13 @@ public class FlashNode {
             if (recvDone.size() > 128) {
                 String first = recvDone.keySet().iterator().next();
                 recvDone.remove(first);
+            }
+            // ★ v1.18.40：内容级幂等登记（容量 128，FIFO 淘汰）
+            recvDoneContent.put(conn.peerId + "|" + ib.name + "|" + ib.size,
+                    System.currentTimeMillis());
+            if (recvDoneContent.size() > 128) {
+                String first = recvDoneContent.keySet().iterator().next();
+                recvDoneContent.remove(first);
             }
         }
         try {

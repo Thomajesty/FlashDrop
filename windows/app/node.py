@@ -219,6 +219,9 @@ class FlashNode:
         # 供 FILE_OK 丢失后的重试幂等应答（容量 128，FIFO 淘汰；
         # ★ v1.18.39 改保留式应答 + 键带 peer_id）
         self._recent_done = {}
+        # ★ v1.18.40：内容级幂等表 ((peer_id, name, size) -> 完成时刻)，
+        #   拦旧版对端换 tid 的重复投递（容量 128，FIFO 淘汰）
+        self._recent_done_content = {}
         self.out_waiters: dict = {}    # (peer_id, tid) -> Future（FILE_OK/FAIL/REFUSE/CANCEL）
         self.ready_waiters: dict = {}  # (peer_id, tid) -> Future（RECV_READY/REFUSE）
         self.ack_waiters: dict = {}    # (peer_id, mid) -> Future
@@ -1079,6 +1082,21 @@ class FlashNode:
             except Exception:
                 pass
             return
+        # ★ v1.18.40：内容级幂等 —— 同 peer+同名+同大小 5 分钟内已完整
+        #   接收过 → 直接回 FILE_OK duplicate，不落盘不建卡。拦住旧版
+        #   对端补发换 tid 造成的重复投递（用户截图：同一 APK/图片收两份）。
+        cmeta_name = util.safe_filename(obj.get("name") or "file")
+        cmeta_size = int(obj.get("size") or 0)
+        cprev = self._recent_done_content.get(
+            (conn.peer_id, cmeta_name, cmeta_size))
+        if cprev is not None and time.time() - cprev < 300:
+            try:
+                await conn.send_json(
+                    {"type": P.T_FILE_OK, "tid": tid, "path": "",
+                     "verified": True, "size": cmeta_size, "duplicate": True})
+            except Exception:
+                pass
+            return
         if key in self.inbounds:
             return
         meta = {
@@ -1301,6 +1319,15 @@ class FlashNode:
         #   同 tid 重试做幂等应答（不再重复接收）
         # ★ v1.18.39：键改 (peer_id, tid) + 保留式 + 容量 128 FIFO 淘汰
         self._recent_done[(conn.peer_id, tid)] = (dest, ib.meta["size"])
+        # ★ v1.18.40：内容级幂等登记 —— 旧版对端（未升级 v1.18.39）补发
+        #   每轮换新 tid，同 tid 幂等拦不住。按 (peer_id, 文件名, 大小)
+        #   记录完成时刻，FILE_START 到达时 5 分钟窗口内直接回 FILE_OK
+        #   duplicate（不重复落盘）。同名同大小极大概率同内容，误拦
+        #   （5 分钟内真发两个同名同大小文件）丢的也是重复内容，无感。
+        self._recent_done_content[(conn.peer_id, ib.meta["name"],
+                                   ib.meta["size"])] = time.time()
+        if len(self._recent_done_content) > 128:
+            self._recent_done_content.pop(next(iter(self._recent_done_content)), None)
         if len(self._recent_done) > 128:
             first = next(iter(self._recent_done))
             self._recent_done.pop(first, None)
