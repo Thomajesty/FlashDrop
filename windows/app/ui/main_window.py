@@ -2463,7 +2463,11 @@ class MainWindow(QMainWindow):
         #   "待发送卡片没有了"。pending 数量极小（队列上限），单独豁免。
         pended = [m for m in out if m.get("state") == "pending"]
         rest = [m for m in out if m.get("state") != "pending"]
-        out = (rest[-300:] + pended)
+        # ★ v1.18.38：渲染窗口 300 → 200。
+        #   实测（tests/profile_memory_v11838.py）每个气泡控件 ≈0.4MB 私有
+        #   内存（QSS 级联 + 控件树），300 条 ≈120MB；200 条 ≈80MB，
+        #   配合页缓存上限下调（_CHAT_PAGE_CAP）显著压低常驻内存。
+        out = (rest[-200:] + pended)
         out.sort(key=lambda m: m.get("ts", 0))
         return out
 
@@ -2472,7 +2476,29 @@ class MainWindow(QMainWindow):
         sel = [i.data(Qt.UserRole) for i in self.device_list.selectedItems()]
         return (tuple(sel), bool(self.multi_mode))
 
-    _CHAT_PAGE_CAP = 8      # 最多缓存几个视图的气泡页（超出按 LRU 丢弃）
+    # ★ v1.18.38：8 → 3。实测（profile_memory_v11838.py）每个缓存页
+    #   （120 条文本气泡）私有内存 ≈60MB，8 页最多堆 ~480MB —— 用户
+    #   反馈常驻 1.6GB 的最大单一来源。3 页 = 当前页 + 2 个最近视图，
+    #   切换体验几乎无损（最近来回的两个设备仍秒切），最小化时还会
+    #   再裁一次（见 _trim_pages）。
+    _CHAT_PAGE_CAP = 3      # 最多缓存几个视图的气泡页（超出按 LRU 丢弃）
+
+    def _trim_pages(self):
+        """★ v1.18.38：把当前页之外的所有缓存页销毁，回收控件与 pixmap。
+
+        触发时机：窗口最小化 / 隐藏到托盘（用户长期挂在后台，
+        此时保留多页缓存纯属浪费）。当前页不动，恢复时切换到
+        其它设备会按需重建。"""
+        cur = self._chat_current_key
+        init_key = ("__init__", ())
+        for k in [k for k in self._chat_pages
+                  if k != cur and k != init_key]:
+            rec = self._chat_pages.pop(k, None)
+            if rec:
+                self._chat_stack.removeWidget(rec[0])
+                rec[0].deleteLater()
+        self._chat_page_order = [k for k in self._chat_page_order
+                                 if k == cur or k == init_key]
 
     def _build_chat_page(self, ckey, msgs):
         """新建一个气泡页并把 msgs 全建进去"""
@@ -3993,12 +4019,21 @@ class MainWindow(QMainWindow):
         if self.cfg["minimize_to_tray"] and self.tray.isVisible():
             e.ignore()
             self.hide()
+            # ★ v1.18.38：隐藏到托盘即裁掉非当前缓存页（长期后台挂着的
+            #   主力场景，此刻多页缓存纯属浪费）
+            self._trim_pages()
             self.tray.showMessage("闪传仍在运行",
                                   "已最小化到系统托盘，继续接收局域网消息。",
                                   QSystemTrayIcon.Information, 2000)
         else:
             self._real_quit()
             e.accept()
+
+    def changeEvent(self, e):
+        """★ v1.18.38：最小化到任务栏时也裁掉非当前缓存页。"""
+        super().changeEvent(e)
+        if e.type() == QEvent.Type.WindowStateChange and self.window().isMinimized():
+            self._trim_pages()
 
     def _real_quit(self):
         self.tray.hide()

@@ -9,6 +9,7 @@
   R3 渲染后检查聊天区气泡数量
 """
 import os
+import re
 import sys
 import tempfile
 
@@ -139,7 +140,8 @@ def main():
     ck("R5 存在待发送一致性自愈 _pending_self_heal",
        "def _pending_self_heal" in src2
        and "self._pending_self_heal()" in src2)
-    ck("R5 pending 豁免 300 截断", 'rest[-300:] + pended' in src2)
+    ck("R5 pending 豁免尾部截断（窗口值随版本演进，v1.18.38 起 200）",
+       re.search(r'rest\[-\d+:\] \+ pended', src2) is not None)
 
     win.close()
     print()
