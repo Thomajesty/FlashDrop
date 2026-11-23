@@ -34,6 +34,14 @@ for p in (WIN,):
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+# ★ v1.18.41：数据目录隔离（v1.18.40 血泪教训）。
+#   之前本套件漏设 FLASHDROP_DATA_DIR —— group_b 的窗口把假设备
+#   bbbb… 的历史写进真实 %APPDATA%\FlashDrop\history，下一轮运行
+#   又把上轮残留的 recv-tid-1 旧卡 load 回来（ts 超出 3 分钟合并
+#   窗口）→ B3「同内容不同 tid 复用同一张卡」假失败，且持续污染
+#   真实数据。必须在任何 app.* 导入/实例化之前设好。
+os.environ["FLASHDROP_DATA_DIR"] = tempfile.mkdtemp(prefix="fd_v11840_data_")
+
 FAILS = []
 N = 0
 
@@ -87,15 +95,30 @@ def group_a():
        and "5 * 60 * 1000L" in fnode)
     ck("A7 安卓登记内容键",
        'recvDoneContent.put(conn.peerId + "|" + ib.name + "|" + ib.size' in fnode)
-    ck("A8 版本 1.18.40",
-       '1.18.40' in rd("app/__init__.py")
-       and 'APP_VERSION = "1.18.40"' in rd(os.path.join(
-           "..", "android", "app", "src", "main", "java",
-           "com", "flashdrop", "app", "FdUtil.java")))
+    # ★ v1.18.41：版本断言演进式化 —— 双端版本一致且不低于 1.18.41，
+    #   manifest 与 __init__ 同源，不再钉死具体小版本号。
+    mver = re.search(r'__version__ = "(1\.18\.\d+)"', rd("app/__init__.py"))
+    aver = re.search(r'APP_VERSION = "(1\.18\.\d+)"',
+                     rd(os.path.join("..", "android", "app", "src", "main",
+                                     "java", "com", "flashdrop", "app",
+                                     "FdUtil.java")))
     man = rd(os.path.join("..", "android", "app", "src", "main",
                           "AndroidManifest.xml"))
-    ck("A9 versionCode 69 + versionName 1.18.40",
-       'versionCode="69"' in man and 'versionName="1.18.40"' in man)
+    mcode = re.search(r'android:versionCode="(\d+)"', man)
+    mname = re.search(r'android:versionName="(1\.18\.\d+)"', man)
+
+    def vtuple(s):
+        return tuple(int(x) for x in s.split("."))
+
+    ck("A8 双端版本号一致且 >= 1.18.41",
+       bool(mver and aver) and mver.group(1) == aver.group(1)
+       and vtuple(mver.group(1)) >= vtuple("1.18.41"),
+       f"py={mver and mver.group(1)} java={aver and aver.group(1)}")
+    ck("A9 manifest versionCode >= 70 且 versionName 同源",
+       bool(mcode and mname and mver)
+       and int(mcode.group(1)) >= 70
+       and mname.group(1) == mver.group(1),
+       f"code={mcode and mcode.group(1)} name={mname and mname.group(1)}")
 
 
 # ============================ B 组：UI 行为 ============================

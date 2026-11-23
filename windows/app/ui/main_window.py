@@ -23,8 +23,8 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
                                QComboBox, QSpinBox, QTabWidget, QMessageBox,
                                QSystemTrayIcon, QMenu, QApplication,
                                QDialogButtonBox, QGraphicsOpacityEffect, QFrame,
-                               QToolButton, QStackedWidget, QInputDialog,
-                               QProgressBar)
+                               QToolButton, QInputDialog,
+                               QProgressBar, QStackedLayout)
 
 from .. import util
 from .. import updater
@@ -124,6 +124,78 @@ def make_app_icon(size=64) -> QIcon:
     p.drawPolygon(poly)
     p.end()
     return QIcon(pm)
+
+
+class ChatStackLayout(QStackedLayout):
+    """★ v1.18.41：压掉 heightForWidth 通道。
+
+    QStackedLayout::heightForWidth（qstackedlayout.cpp）取**所有页的
+    最大值**；而 QScrollArea(widgetResizable) 只要 widget 的布局
+    hasHeightForWidth() 为真，容器高度就直接 = widget->heightForWidth()
+    = 全页最大值，**完全绕过 sizeHint** —— 缓存里有长会话页时当前短页
+    被钉死在长页高度（实测 60 气泡页 + 3 气泡页，切到短页容器仍
+    3530px、滚动范围 2977）。这里声明布局无 HFW，让 QScrollArea 回落
+    到 sizeHint 通道。"""
+
+    def hasHeightForWidth(self):
+        return False
+
+    def heightForWidth(self, width):
+        w = self.currentWidget()
+        return w.heightForWidth(width) if w is not None else -1
+
+
+class ChatStack(QWidget):
+    """★ v1.18.41：聊天页专用栈（QWidget + ChatStackLayout）。
+
+    原实现是 QStackedWidget：其内部 QStackedLayout 的 sizeHint /
+    heightForWidth 都取**所有页的最大值**——这是为"未知哪页会被显示"
+    的通用容器设计的；但聊天区每页内容高度差异极大（200 条气泡的
+    会话 vs 刚开始的空会话），取最大值会把当前短页整体撑到最长页的
+    高度：气泡都挤在顶部，下方一大片空白，滚动条还能继续往下滚
+    （用户反馈的"发完消息底下是空白"）。现在容器尺寸只跟随当前页，
+    且布局层声明无 HFW 防止 QScrollArea 绕过 sizeHint。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._lay = ChatStackLayout(self)
+
+    # ---- QStackedWidget 兼容面（调用点仅用下列 API）----
+    def addWidget(self, w):
+        return self._lay.addWidget(w)
+
+    def removeWidget(self, w):
+        return self._lay.removeWidget(w)
+
+    def indexOf(self, w):
+        return self._lay.indexOf(w)
+
+    def widget(self, i):
+        return self._lay.widget(i)
+
+    def count(self):
+        return self._lay.count()
+
+    def currentWidget(self):
+        return self._lay.currentWidget()
+
+    def setCurrentWidget(self, w):
+        self._lay.setCurrentWidget(w)
+
+    def setCurrentIndex(self, i):
+        self._lay.setCurrentIndex(i)
+
+    def currentIndex(self):
+        return self._lay.currentIndex()
+
+    # ---- 尺寸 hint：只看当前页 ----
+    def sizeHint(self):
+        w = self._lay.currentWidget()
+        return w.sizeHint() if w is not None else super().sizeHint()
+
+    def minimumSizeHint(self):
+        w = self._lay.currentWidget()
+        return w.minimumSizeHint() if w is not None else super().minimumSizeHint()
 
 
 class DeviceItemWidget(QWidget):
@@ -1598,7 +1670,13 @@ class MainWindow(QMainWindow):
         self.chat_scroll = QScrollArea()
         self.chat_scroll.setObjectName("ChatScroll")
         self.chat_scroll.setWidgetResizable(True)
-        container = QStackedWidget()
+        # ★ v1.18.41：聊天区专用栈 —— QStackedWidget 默认 sizeHint 取
+        #   **所有页的最大值**，缓存里只要有一页历史很长，当前短页就被
+        #   整体撑高，气泡下方出现一大片空白且滚动条还能继续往下滚
+        #   （实测：60 气泡页 + 3 气泡页，切到短页后容器 2408px、
+        #   页面内容只有 128px）。重写为按**当前页**取 hint，容器高度
+        #   跟随当前视图的真实内容。
+        container = ChatStack()
         container.setObjectName("ChatScroll")
         # ★ v1.18.17：聊天区改成"每视图一页"的栈。
         #   原来所有视图共用一个 QVBoxLayout，切设备必须销毁重建全部气泡
@@ -2585,7 +2663,10 @@ class MainWindow(QMainWindow):
 
         # ② 末尾追加 → 只补新的
         prev = self._chat_pages.get(self._chat_current_key)
-        prev_ids = prev[3] if prev is not None else None
+        # ★ v1.18.41：初始占位页的记录是 (page, vbox) 二元组，
+        #   直接取 [3] 会 IndexError（v1.18.41 前靠"消息先于首渲染必走
+        #   _is_in_view 拦截"侥幸不触发，补防御）。
+        prev_ids = prev[3] if (prev is not None and len(prev) >= 4) else None
         grew = (not force and prev_ids is not None
                 and len(ids) > len(prev_ids) and ids[:len(prev_ids)] == prev_ids)
         if grew:
@@ -2768,13 +2849,39 @@ class MainWindow(QMainWindow):
         # 比在十几处事件分支各写一遍可靠。
         self._persist_msg_state(m)
 
+    # ★ v1.18.41：落盘节流。History.upsert 是**整读整写**历史文件；
+    #   文件传输时每个 progress 事件都触发 _refresh_msg → 大历史文件
+    #   被整读整写一遍（任务管理器实测持续 6+ MB/s 磁盘占用）。
+    #   状态变化（sending→ok 等）立即落盘；progress 类高频刷新每条
+    #   消息最多 2 秒落一次盘。重启语义不受影响：未完成传输 load 时
+    #   本来就统一标记为"应用重启，传输中断"。
+    _PERSIST_MIN_INTERVAL = 2.0
+
     def _persist_msg_state(self, m: dict):
-        """把一条消息的当前状态覆盖式写回磁盘（按 mid / tid 定位）"""
+        """把一条消息的当前状态覆盖式写回磁盘（按 mid / tid 定位，带节流）"""
         try:
             if m.get("kind") == "text" and not m.get("mid"):
                 return
             if m.get("kind") == "file" and not m.get("tid"):
                 return
+            memo = getattr(self, "_persist_memo", None)
+            if memo is None:
+                memo = self._persist_memo = {}
+            key = (m.get("mid") or m.get("tid") or "", m.get("dir"))
+            st = m.get("state")
+            now = time.monotonic()
+            last_state, last_ts = memo.get(key, (None, 0.0))
+            if st == "progress":
+                # 高频进度：限频
+                if now - last_ts < self._PERSIST_MIN_INTERVAL:
+                    return
+            elif st == last_state:
+                # 状态没变（只是进度数字变了但未到限频点之后的重复终态）
+                return
+            memo[key] = (st, now)
+            # 终态后清掉备忘，防长期运行 memo 无界增长
+            if st in ("done", "ok", "failed", "fail", "refuse", "cancel"):
+                memo.pop(key, None)
             if m.get("dir") == "in":
                 pid = m.get("peer_id")
                 if pid:
@@ -2808,7 +2915,20 @@ class MainWindow(QMainWindow):
         if self._is_in_view(m):
             if not self._stick_bottom and m.get("dir") == "in":
                 self._new_msg_pending = True
+            # ★ v1.18.41：自己发的消息无条件回到最底部（与微信一致）。
+            #   旧实现只有"来消息"才维护粘底语义；用户往上翻历史后发送，
+            #   消息气泡插到了视口外面，屏幕上看到的还是旧内容 + 底部空白。
+            if m.get("dir") == "out":
+                self._stick_bottom = True
+                self._new_msg_pending = False
             self._append_bubble(m)
+            # ★ v1.18.41：直接插气泡必须同步页缓存元数据。
+            #   _append_bubble 把气泡插进了当前缓存页，但页的 mids / ckey
+            #   不更新 —— 下一次任何 _render_chat（设备列表每次刷新、主题
+            #   切换、peer 合并、补发提交都会触发）的 grew 分支拿旧 mids
+            #   做前缀比对，判定"末尾追加了新消息"，把同一条消息**再插
+            #   一遍**（重复卡片，实测复现：发送后该消息出现 2 次）。
+            self._sync_page_cache_append(m)
         if notify and (not self.isVisible() or not self._is_in_view(m)):
             self.unread[pid] = self.unread.get(pid, 0) + 1
             if self.cfg["notify_on_receive"]:
@@ -2816,6 +2936,28 @@ class MainWindow(QMainWindow):
                 body = m.get("text") or f"文件：{m.get('file', '')}"
                 self.tray.showMessage(title, body, QSystemTrayIcon.Information, 3000)
             self._refresh_devices()
+
+    def _sync_page_cache_append(self, m: dict):
+        """直接插气泡后同步当前页缓存（防 grew 分支重复插同一消息）。
+
+        把新消息的 identity 追加进当前页的 mids 并重算 ckey —— 与
+        _render_chat grew 分支的重键逻辑完全一致。最坏情况（新消息
+        实际按 ts 落在列表中部、前缀不匹配）也只会让下一次渲染走
+        建新页路径重建，不会产生重复气泡。"""
+        old_key = self._chat_current_key
+        rec = self._chat_pages.get(old_key)
+        if rec is None or len(rec) < 4 or self._rendered_key is None:
+            return
+        page, vbox, wmap, mids = rec
+        new_mids = list(mids) + [self._msg_identity(m)]
+        new_key = (self._rendered_key, tuple(new_mids))
+        self._chat_pages.pop(old_key, None)
+        self._chat_page_order = [k for k in self._chat_page_order
+                                 if k != old_key]
+        self._chat_pages[new_key] = (page, vbox, wmap, new_mids)
+        self._chat_page_order.append(new_key)
+        self._chat_current_key = new_key
+        self._rendered_ids = new_mids
 
     # ================= 事件处理 =================
 
@@ -3055,6 +3197,9 @@ class MainWindow(QMainWindow):
                         self.history.append(t, m)
                     if self._is_in_view(m):
                         self._append_bubble(m)
+                        # ★ v1.18.41：与 _append_msg 同口径 —— 直接插气泡
+                        #   后同步页缓存，防下一次渲染 grew 分支重复插卡。
+                        self._sync_page_cache_append(m)
             else:
                 if state == "progress":
                     m["_bytes"][pid] = e.get("transferred", 0)
