@@ -3,16 +3,40 @@
 
 import os
 
-from PySide6.QtCore import Qt, Signal, QSize, QRectF, QUrl, QMimeData, QPointF
+from PySide6.QtCore import Qt, Signal, QSize, QRectF, QUrl, QMimeData, QPointF, QTimer
 from PySide6.QtGui import (QPixmap, QPainter, QColor, QFont, QLinearGradient,
                            QBrush, QPen, QFontMetrics, QGuiApplication, QDesktopServices,
                            QImageReader, QPainterPath, QDrag)
 from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLabel,
                                QPushButton, QProgressBar, QMenu, QSizePolicy,
                                QCheckBox, QGraphicsDropShadowEffect, QApplication)
+import shiboken6
 
 from .. import util
 from .theme import ACCENT, ACCENT2, RED, GREEN, BUBBLE_SCHEMES
+
+
+def dispose_widget(w):
+    """★ v1.18.42：立即析构已从布局摘除的 Qt 控件。
+
+    PySide6 6.11 里 deleteLater() 在高频重建路径（progress 刷新、消息
+    气泡裁剪）中**不会及时析构** —— 实测 2000 次 progress 刷新残留
+    2017 个 QPushButton + 数千 QLabel/HBoxLayout，内存涨 65MB；气泡
+    裁剪同样残留 2201 个 BubbleFrame。shiboken6.delete() 是唯一可靠
+    的即时析构路径（先 setParent(None) 断开父引用）。"""
+    if w is None:
+        return
+    try:
+        w.setParent(None)
+    except Exception:
+        pass
+    try:
+        shiboken6.delete(w)
+    except Exception:
+        try:
+            w.deleteLater()
+        except Exception:
+            pass
 
 AVATAR_COLORS = [QColor("#3b82f6"), QColor("#8b5cf6"), QColor("#ec4899"),
                  QColor("#f59e0b"), QColor("#10b981"), QColor("#06b6d4"),
@@ -554,7 +578,7 @@ class BubbleFrame(QWidget):
         while lay.count():
             it = lay.takeAt(0)
             if it.widget():
-                it.widget().deleteLater()
+                self._safe_dispose(it.widget())
         lay.addWidget(self._make_bubble())
         self._install_menu_policy()
 
@@ -1145,11 +1169,25 @@ class BubbleFrame(QWidget):
         b.clicked.connect(slot)
         return b
 
+    def _safe_dispose(self, w):
+        """从布局摘除的控件：常规立即析构；若当前正处在该控件的信号
+        slot 栈里（sender() 命中）则延迟一拍，避免 use-after-free。"""
+        if w is None:
+            return
+        try:
+            sender = self.sender()
+        except Exception:
+            sender = None
+        if sender is w:
+            QTimer.singleShot(0, lambda ww=w: dispose_widget(ww))
+        else:
+            dispose_widget(w)
+
     def _clear_btns(self):
         while self._btn_row.count():
             it = self._btn_row.takeAt(0)
             if it.widget():
-                it.widget().deleteLater()
+                self._safe_dispose(it.widget())
 
     def _update_transfer_ui(self):
         msg = self.msg

@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
                                QDialogButtonBox, QGraphicsOpacityEffect, QFrame,
                                QToolButton, QInputDialog,
                                QProgressBar, QStackedLayout)
+import shiboken6
 
 from .. import util
 from .. import updater
@@ -33,7 +34,8 @@ from .theme import (build_qss, DARK, LIGHT, ACCENT, ACCENT2, GREEN, RED,
                     resolve_theme, bubble_scheme, BUBBLE_SCHEMES)
 from .bridge import NodeBridge
 from .history import History
-from .widgets import BubbleFrame, make_avatar, make_platform_badge
+from .widgets import (BubbleFrame, make_avatar, make_platform_badge,
+                      dispose_widget)
 from .image_viewer import ImageViewer
 from .emoji import EmojiButton
 
@@ -196,6 +198,39 @@ class ChatStack(QWidget):
     def minimumSizeHint(self):
         w = self._lay.currentWidget()
         return w.minimumSizeHint() if w is not None else super().minimumSizeHint()
+
+
+def _dispose_item_widgets(lst: QListWidget):
+    """★ v1.18.42：彻底释放 QListWidget 的 setItemWidget 子控件。
+
+    PySide6 6.11 的 QListWidget.setItemWidget 会把 widget reparent 到
+    viewport，且 QListWidget.clear() / removeItemWidget() / deleteLater()
+    **都不会析构它**（实测：500 次设备列表刷新残留 1000 个
+    DeviceItemWidget + 4000 个 QLabel，内存 +100MB/500 次 —— 设备状态
+    抖动时每 2 秒刷新一次，挂一晚上直接冲到数 GB，这是 8.8GB 的头号元凶）。
+    唯一可靠释放路径：removeItemWidget 断开 item 关联后 shiboken6.delete()
+    直接析构 C++ 对象（实测 2000 次刷新残留从 4000 → 2，内存仅 +3MB）。
+
+    必须在 lst.clear() 之前调用。"""
+    for i in range(lst.count()):
+        it = lst.item(i)
+        if it is None:
+            continue
+        w = lst.itemWidget(it)
+        if w is None:
+            continue
+        try:
+            lst.removeItemWidget(it)
+        except Exception:
+            pass
+        try:
+            shiboken6.delete(w)
+        except Exception:
+            # C++ 对象已被 Qt 自己回收（例如窗口销毁中）：退化为 deleteLater
+            try:
+                w.deleteLater()
+            except Exception:
+                pass
 
 
 class DeviceItemWidget(QWidget):
@@ -2026,6 +2061,9 @@ class MainWindow(QMainWindow):
         sel_ids = {i.data(Qt.UserRole) for i in self.device_list.selectedItems()}
         self._rebuilding = True
         self.device_list.blockSignals(True)
+        # ★ v1.18.42：先彻底析构旧的 itemWidget 再 clear —— 否则每次
+        #   设备刷新都残留一整套 widget+label+pixmap（8.8GB 头号元凶）
+        _dispose_item_widgets(self.device_list)
         self.device_list.clear()
         allw = DeviceItemWidget({"id": ALL_ID, "name": "全部设备", "platform": "windows",
                                  "ips": [], "online": True, "connected": True},
@@ -2574,7 +2612,7 @@ class MainWindow(QMainWindow):
             rec = self._chat_pages.pop(k, None)
             if rec:
                 self._chat_stack.removeWidget(rec[0])
-                rec[0].deleteLater()
+                dispose_widget(rec[0])
         self._chat_page_order = [k for k in self._chat_page_order
                                  if k == cur or k == init_key]
 
@@ -2608,7 +2646,7 @@ class MainWindow(QMainWindow):
             rec = self._chat_pages.pop(old, None)
             if rec:
                 self._chat_stack.removeWidget(rec[0])
-                rec[0].deleteLater()
+                dispose_widget(rec[0])
         return page, vbox, built_map, mids
 
     def _switch_chat_page(self, ckey):
@@ -2730,6 +2768,11 @@ class MainWindow(QMainWindow):
             w.set_checked(True)
         self.chat_vbox.insertWidget(self.chat_vbox.count() - 1, w)
         self.widgets_by_msg.setdefault(id(m), []).append(w)
+        # ★ v1.18.42：无论页缓存是否同步成功，都在插入点兜底裁剪 ——
+        #   直接插气泡路径绕过 _visible_msgs 窗口，长时运行会无限累积。
+        rec = self._chat_pages.get(self._chat_current_key)
+        if rec is not None and len(rec) >= 4:
+            self._trim_bubbles(rec[1], rec[2], rec[3])
 
     def _open_link(self, url):
         QDesktopServices.openUrl(QUrl(url))
@@ -2903,6 +2946,29 @@ class MainWindow(QMainWindow):
         targets = m.get("targets") or [m.get("peer_id")]
         return bool(set(targets) & view)
 
+    # ★ v1.18.42：内存消息容器上限。对齐 History(max_per_peer) 的 2 倍
+    #   （磁盘 cache 本就按此裁剪），避免长时运行 msgs 无限增长。
+    _MSG_LIST_CAP = 1000
+    _TID_INDEX_CAP = 256
+
+    def _trim_msg_containers(self, pid: str = None):
+        """给 msgs / in_by_tid / out_by_tid 加上限（长时运行防无界累积）。"""
+        try:
+            cap = max(200, int(self.cfg["history_limit"]) * 2)
+        except Exception:
+            cap = 1000
+        targets = [pid] if pid else list(self.msgs.keys())
+        for p in targets:
+            lst = self.msgs.get(p)
+            if lst is not None and len(lst) > cap:
+                del lst[:len(lst) - cap]
+        for d in (self.in_by_tid, self.out_by_tid):
+            if len(d) > self._TID_INDEX_CAP:
+                # dict 保序：删最旧的键（保留最近 256 个 tid 的幂等能力）
+                n = len(d) - self._TID_INDEX_CAP
+                for k in list(d.keys())[:n]:
+                    d.pop(k, None)
+
     def _append_msg(self, pid: str, m: dict, notify=False):
         if pid not in self.msgs:
             # 懒加载：该设备历史尚未读入，先只放新消息，视图切换时补全
@@ -2912,6 +2978,7 @@ class MainWindow(QMainWindow):
         lst.append(m)
         lst.sort(key=lambda x: x.get("ts", 0))
         self.history.append(pid, m)
+        self._trim_msg_containers(pid)
         if self._is_in_view(m):
             if not self._stick_bottom and m.get("dir") == "in":
                 self._new_msg_pending = True
@@ -2937,6 +3004,41 @@ class MainWindow(QMainWindow):
                 self.tray.showMessage(title, body, QSystemTrayIcon.Information, 3000)
             self._refresh_devices()
 
+    # ★ v1.18.42：页内气泡硬上限。_visible_msgs 的 200 条窗口只在
+    #   _render_chat 重建页时生效；直接 _append_msg / _on_transfer 插气泡
+    #   绕过它，长时运行气泡无上限累积（实测发 500 条消息 → 500 个气泡
+    #   常驻 ≈200MB，且每个气泡持 QSS/控件树/QPixmap）。与渲染窗口同口径。
+    _BUBBLE_PAGE_CAP = 220
+
+    def _trim_bubbles(self, vbox, wmap, mids):
+        """裁掉当前页最旧的气泡，使存活数 ≤ _BUBBLE_PAGE_CAP。
+
+        同步三处：vbox 控件（含 C++ 析构）、widgets_by_msg（防引用残留）、
+        mids（页 identity 与渲染一致）。"""
+        excess = vbox.count() - 1 - self._BUBBLE_PAGE_CAP  # 末尾 stretch 不算
+        if excess <= 0:
+            return
+        from PySide6.QtWidgets import QLayoutItem
+        for _ in range(excess):
+            item = vbox.takeAt(0)
+            if item is None:
+                continue
+            w = item.widget()
+            if w is None:
+                continue
+            mid = id(w.msg) if getattr(w, "msg", None) is not None else None
+            # 从 wmap 摘除该 msg 的所有引用（同一 msg 可能有多份，全摘）
+            if mid is not None:
+                for ws in list(wmap.values()):
+                    if w in ws:
+                        ws.remove(w)
+                if mid in wmap and not wmap[mid]:
+                    del wmap[mid]
+            dispose_widget(w)
+        # mids 与气泡一一对应，裁掉最旧的 excess 条
+        if mids is not None and excess <= len(mids):
+            del mids[:excess]
+
     def _sync_page_cache_append(self, m: dict):
         """直接插气泡后同步当前页缓存（防 grew 分支重复插同一消息）。
 
@@ -2949,6 +3051,9 @@ class MainWindow(QMainWindow):
         if rec is None or len(rec) < 4 or self._rendered_key is None:
             return
         page, vbox, wmap, mids = rec
+        # ★ v1.18.42：先把超窗口的旧气泡裁掉（直接插气泡绕过
+        #   _visible_msgs 的 200 条窗口）——用旧 mids，裁剪后重算。
+        self._trim_bubbles(vbox, wmap, mids)
         new_mids = list(mids) + [self._msg_identity(m)]
         new_key = (self._rendered_key, tuple(new_mids))
         self._chat_pages.pop(old_key, None)
@@ -3195,6 +3300,7 @@ class MainWindow(QMainWindow):
                         self.msgs.setdefault(t, []).append(m)
                         self.msgs[t].sort(key=lambda x: x.get("ts", 0))
                         self.history.append(t, m)
+                    self._trim_msg_containers()
                     if self._is_in_view(m):
                         self._append_bubble(m)
                         # ★ v1.18.41：与 _append_msg 同口径 —— 直接插气泡
@@ -3580,7 +3686,12 @@ class MainWindow(QMainWindow):
         def _release_viewer(_r=None, vv=v):
             if vv in self._viewers:
                 self._viewers.remove(vv)
-            vv.deleteLater()
+            # ★ v1.18.42：deleteLater 在高频打开/关闭时不可靠（实测同类
+            #   路径残留数千对象），改 shiboken6 立即析构整棵 dialog
+            #   子树（Canvas → QGraphicsScene → 原图 QPixmap 全部释放）。
+            #   延迟一拍：finished 还在 sender 的发射栈里，同步 delete
+            #   会 use-after-free；0ms 后事件循环安全析构。
+            QTimer.singleShot(0, lambda vv=vv: dispose_widget(vv))
         v.finished.connect(_release_viewer)
         v.show()
         v.raise_()

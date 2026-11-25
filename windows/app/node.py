@@ -437,6 +437,10 @@ class FlashNode:
                 if not msg:
                     continue
                 pid = msg.get("id")
+                # ★ v1.18.42：拒绝超长/非字符串设备 ID —— UDP 单包上限
+                #   64KB，若被滥用会把几十 KB 字符串当 dict key 永久驻留
+                if not isinstance(pid, str) or len(pid) > 64:
+                    continue
                 ip = addr[0] if addr else ""
                 if pid == self.device_id:
                     continue
@@ -571,6 +575,13 @@ class FlashNode:
                         and now - peer.last_seen > PEER_OFFLINE_REMOVE):
                     self.peers.pop(peer.id, None)
                     changed = True
+            # ★ v1.18.42：淘汰过期 last_reply（此前只写不删，设备 ID
+            #    churn 时无界增长）；与 peers 用同一 30 分钟窗口。
+            if self._last_reply:
+                stale = [k for k, v in self._last_reply.items()
+                         if now - v > PEER_OFFLINE_REMOVE]
+                for k in stale:
+                    self._last_reply.pop(k, None)
             # ★ v1.18.18：每 5 分钟清理一次过期断点残留（.part/.bmp/.fp）。
             # 只删**没有任何在途任务**的旧文件，避免删掉正在续传的数据。
             if now - gc_t > 300:
@@ -1488,6 +1499,10 @@ class FlashNode:
                 self.emit({"event": "text_state", "peer_id": pid, "mid": mid,
                            "state": "ok"})
             except asyncio.TimeoutError:
+                # ★ v1.18.42：ACK 超时必须摘掉 waiter —— 否则每发一条
+                #   未确认消息就永久驻留一个 Future（离线设备每 10s
+                #   补发重试，一晚上数万条 → 无界增长）
+                self.ack_waiters.pop((pid, mid), None)
                 results[pid] = "timeout"
                 self.emit({"event": "text_state", "peer_id": pid, "mid": mid,
                            "state": "timeout"})
@@ -1580,10 +1595,16 @@ class FlashNode:
                            "peer_id": pid, "file": name, "size": size,
                            "mime": mime, "state": "started", "transferred": 0,
                            "targets": list(target_ids), "src_path": path})
-            await asyncio.gather(
-                *[self._send_file_to(pid, tid, path, name, size, mime)
-                  for pid in target_ids],
-                return_exceptions=True)
+            try:
+                await asyncio.gather(
+                    *[self._send_file_to(pid, tid, path, name, size, mime)
+                      for pid in target_ids],
+                    return_exceptions=True)
+            finally:
+                # ★ v1.18.42：fire-and-forget 发送任务结束后必须清理状态，
+                #   否则每个 tid 的 out_states/_send_info 永久驻留
+                self.out_states.pop(tid, None)
+                self._send_info.pop(tid, None)
 
     async def _send_file_to(self, peer_id, tid, path, name, size, mime):
         """发送单个文件到单个目标。

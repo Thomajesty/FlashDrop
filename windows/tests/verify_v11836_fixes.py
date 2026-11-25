@@ -59,8 +59,13 @@ def main():
 
     # ---------- B 组：内存 ----------
     print("\n=== B. ImageViewer 关闭即销毁 ===")
-    ck("B1 finished 回调含 deleteLater",
-       "_release_viewer" in mw and "vv.deleteLater()" in mw)
+    # ★ v1.18.42：实现演进 —— deleteLater 在高频路径不可靠，改
+    #   shiboken6 即时析构（延迟一拍避免 use-after-free）。断言改为
+    #   "finished 回调确实释放 viewer"，不限定具体 API。
+    ck("B1 finished 回调释放 viewer（deleteLater/dispose_widget）",
+       "_release_viewer" in mw
+       and ("vv.deleteLater()" in mw
+            or "dispose_widget(vv)" in mw))
     ck("B2 旧泄漏 lambda 已移除",
        "lambda _r, vv=v: self._viewers.remove(vv)" not in mw)
 
