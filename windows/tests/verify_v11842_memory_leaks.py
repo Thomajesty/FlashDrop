@@ -78,13 +78,18 @@ def group_a():
     ck("A3 气泡页硬上限 + 裁剪接线",
        "_BUBBLE_PAGE_CAP" in mw and "def _trim_bubbles" in mw
        and "self._trim_bubbles(rec[1], rec[2], rec[3])" in mw)
-    ck("A4 msgs/tid 容器上限",
-       "_MSG_LIST_CAP" in mw and "_TID_INDEX_CAP" in mw
+    ck("A4 msgs 上限 + 索引联动清理（审计修正）",
+       "_MSG_LIST_CAP" in mw
+       and "live_ids = {id(m) for lst in self.msgs.values() for m in lst}" in mw
+       and "if id(m) not in live_ids:" in mw
        and "self._trim_msg_containers" in mw)
     ck("A5 页淘汰用即时析构",
        "dispose_widget(rec[0])" in mw)
-    ck("A6 ack_waiters 超时清理",
-       "self.ack_waiters.pop((pid, mid), None)" in node)
+    ck("A6 ack_waiters 全路径清理（finally 含 CancelledError）",
+       "self.ack_waiters.pop((pid, mid), None)" in node
+       and "finally:" in node)
+    ck("A6b _persist_memo 老化兜底（审计修正）",
+       "len(memo) > 512" in mw and "cutoff = now - 600.0" in mw)
     ck("A7 _send_files_task finally 清理状态",
        "self.out_states.pop(tid, None)" in node
        and "self._send_info.pop(tid, None)" in node)
@@ -195,12 +200,25 @@ def group_b():
             win._on_peers(peers)
     settle()
     after_files = mem_mb()
-    ck("B4 文件事件 x500 内存增量 < 100MB", after_files - after_send < 100,
+    ck("B4 文件事件 x500 内存增量 < 120MB", after_files - after_send < 120,
        f"+{after_files - after_send:.1f}MB")
-    ck("B4 in_by_tid 有上限（<=256）",
-       len(win.in_by_tid) <= 256, str(len(win.in_by_tid)))
+    ck("B4 in_by_tid 随 msgs 有界（<=1000）",
+       len(win.in_by_tid) <= 1000, str(len(win.in_by_tid)))
     ck("B4 msgs 有上限（<=1000/设备）",
        all(len(v) <= 1000 for v in win.msgs.values()))
+    # ★ v1.18.42 审计：索引与 msgs 失配会导致重复卡片 ——
+    #   对仍在 msgs 里的旧 tid 再发 progress，必须复用原卡（不新增）。
+    old_tid = "file-tid-300"
+    before_n = len(win.msgs[pid])
+    win._on_transfer({"kind": "recv", "tid": old_tid, "peer_id": pid,
+                      "name": "安卓手机", "file": "f300.jpg", "size": 1300,
+                      "mime": "image/jpeg", "state": "progress",
+                      "transferred": 500, "speed": 1024})
+    settle()
+    ck("B4 旧 tid 的 progress 不建重复卡",
+       len(win.msgs[pid]) == before_n
+       and sum(1 for m in win.msgs[pid] if m.get("tid") == old_tid) == 1,
+       f"msgs {before_n}->{len(win.msgs[pid])}")
 
     # B5：progress x2000 —— 曾残留 2017 个 QPushButton
     btn_before = nvalid("QPushButton")

@@ -1502,10 +1502,13 @@ class FlashNode:
                 # ★ v1.18.42：ACK 超时必须摘掉 waiter —— 否则每发一条
                 #   未确认消息就永久驻留一个 Future（离线设备每 10s
                 #   补发重试，一晚上数万条 → 无界增长）
-                self.ack_waiters.pop((pid, mid), None)
                 results[pid] = "timeout"
                 self.emit({"event": "text_state", "peer_id": pid, "mid": mid,
                            "state": "timeout"})
+            finally:
+                # ★ v1.18.42 审计：CancelledError / 任意异常路径也要摘，
+                #   否则任务取消时 Future 永久驻留（try/finally 统一兜底）
+                self.ack_waiters.pop((pid, mid), None)
         return results
 
     def send_files(self, target_ids: list, paths: list):

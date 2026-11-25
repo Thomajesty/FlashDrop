@@ -2925,6 +2925,18 @@ class MainWindow(QMainWindow):
             # 终态后清掉备忘，防长期运行 memo 无界增长
             if st in ("done", "ok", "failed", "fail", "refuse", "cancel"):
                 memo.pop(key, None)
+            elif len(memo) > 512:
+                # ★ v1.18.42 审计：卡在 progress/started 再也不终结的
+                #   传输（对端消失/中断）其 key 永不 pop —— 加老化兜底，
+                #   清掉 10 分钟未刷新的旧条目（避免 memo 无界增长）。
+                cutoff = now - 600.0
+                for k, (_s, ts) in list(memo.items()):
+                    if ts < cutoff:
+                        memo.pop(k, None)
+                if len(memo) > 512:
+                    # 极端情况：全部都是活跃传输，按最旧的顺序砍
+                    for k in sorted(memo, key=lambda k: memo[k][1])[:len(memo) - 512]:
+                        memo.pop(k, None)
             if m.get("dir") == "in":
                 pid = m.get("peer_id")
                 if pid:
@@ -2949,25 +2961,38 @@ class MainWindow(QMainWindow):
     # ★ v1.18.42：内存消息容器上限。对齐 History(max_per_peer) 的 2 倍
     #   （磁盘 cache 本就按此裁剪），避免长时运行 msgs 无限增长。
     _MSG_LIST_CAP = 1000
-    _TID_INDEX_CAP = 256
 
     def _trim_msg_containers(self, pid: str = None):
-        """给 msgs / in_by_tid / out_by_tid 加上限（长时运行防无界累积）。"""
+        """给 msgs 加上限，并同步清掉指向已裁掉消息的 tid 索引。
+
+        ★ v1.18.42 审计修正：不能用固定 _TID_INDEX_CAP=256 盲删索引 ——
+        msgs 保留 1000 条时，第 300 条的 tid 被索引删掉后，对端重发该
+        传输的 progress 事件会索引未命中 → 新建第二张卡（重复卡片回归，
+        实测复现）。索引容量天然由 msgs 上限约束（≤ 1000×设备数），
+        只需移除指向"已不在 msgs 中"的消息的索引项即可，既无界增长也
+        不会误删仍存活的消息。"""
         try:
             cap = max(200, int(self.cfg["history_limit"]) * 2)
         except Exception:
-            cap = 1000
+            cap = self._MSG_LIST_CAP
         targets = [pid] if pid else list(self.msgs.keys())
+        dropped = set()
         for p in targets:
             lst = self.msgs.get(p)
             if lst is not None and len(lst) > cap:
+                for m in lst[:len(lst) - cap]:
+                    dropped.add(id(m))
                 del lst[:len(lst) - cap]
-        for d in (self.in_by_tid, self.out_by_tid):
-            if len(d) > self._TID_INDEX_CAP:
-                # dict 保序：删最旧的键（保留最近 256 个 tid 的幂等能力）
-                n = len(d) - self._TID_INDEX_CAP
-                for k in list(d.keys())[:n]:
-                    d.pop(k, None)
+        if dropped:
+            # 一次遍历建存活集合，避免对每条被裁消息做 O(n²) 全表扫描
+            live_ids = {id(m) for lst in self.msgs.values() for m in lst}
+            for d in (self.in_by_tid, self.out_by_tid):
+                for k, m in list(d.items()):
+                    # 群发消息挂在多个 target 列表上，其中一个裁剪了不代表
+                    # 其它 target 也裁了 —— 只有当消息从所有 msgs 消失
+                    # 才清索引，否则 progress 事件会新建重复卡片。
+                    if id(m) not in live_ids:
+                        d.pop(k, None)
 
     def _append_msg(self, pid: str, m: dict, notify=False):
         if pid not in self.msgs:
@@ -3018,7 +3043,6 @@ class MainWindow(QMainWindow):
         excess = vbox.count() - 1 - self._BUBBLE_PAGE_CAP  # 末尾 stretch 不算
         if excess <= 0:
             return
-        from PySide6.QtWidgets import QLayoutItem
         for _ in range(excess):
             item = vbox.takeAt(0)
             if item is None:
