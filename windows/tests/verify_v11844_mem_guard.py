@@ -74,9 +74,10 @@ def group_a():
     ck("A2 三级阈值（合理封顶：350/500/700MB）",
        "_MEM_SOFT_MB = 350" in mw and "_MEM_HARD_MB = 500" in mw
        and "_MEM_CRITICAL_MB = 700" in mw)
-    ck("A2b 深度回收 + 超限提示",
-       "def _deep_reclaim" in mw and "def _warn_restart" in mw
-       and "after > 1000" in mw)
+    # ★ v1.18.46：超限提示演进为自动重启（用户要求"默认直接重启"）
+    ck("A2b 深度回收 + 超限自动重启",
+       "def _deep_reclaim" in mw and "def _auto_restart" in mw
+       and "_restart_pending" in mw)
     ck("A3 极限级 EmptyWorkingSet",
        "EmptyWorkingSet" in mw and "def _empty_working_set" in mw)
     ck("A4 图片缓存清空接口",

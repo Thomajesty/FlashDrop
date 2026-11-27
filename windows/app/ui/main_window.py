@@ -27,6 +27,23 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
                                QProgressBar, QStackedLayout)
 import shiboken6
 
+
+# ★ v1.18.46：内存看门狗的 ctypes 结构 —— 必须模块级单例。
+#   旧实现在 _mem_private_mb() 里每次调用都 class PMC(ctypes.Structure)
+#   + ctypes.WinDLL()，每 15s 一次、一晚上 5760 次 × ~70 个 ctypes
+#   元对象（CField/StgDict/PyCStructType）= 数十万常驻对象，且类型对象
+#   参与循环引用、gc 素数代才回收 —— 深度回收清不掉，正是"1060MB
+#   回收后仍超、弹窗反复弹"的真凶之一。
+class _PMC(ctypes.Structure):
+    _fields_ = [("cb", ctypes.c_ulong), ("pf", ctypes.c_ulong),
+                ("pws", ctypes.c_size_t), ("ws", ctypes.c_size_t),
+                ("q1", ctypes.c_size_t), ("q2", ctypes.c_size_t),
+                ("q3", ctypes.c_size_t), ("q4", ctypes.c_size_t),
+                ("pb", ctypes.c_size_t), ("ppb", ctypes.c_size_t)]
+
+
+_k32_mem = None
+
 from .. import util
 from .. import updater
 from ..node import FlashNode
@@ -3131,7 +3148,9 @@ class MainWindow(QMainWindow):
         eff = QGraphicsOpacityEffect(lbl)
         eff.setOpacity(0.96)
         lbl.setGraphicsEffect(eff)
-        QTimer.singleShot(ms, lbl.deleteLater)
+        # ★ v1.18.46：deleteLater 在 PySide6 6.11 不可靠（同类路径
+        #   残留数千对象）—— 延迟一拍用 shiboken6 即时析构整棵子树
+        QTimer.singleShot(ms, lambda ll=lbl: dispose_widget(ll))
 
     def _on_scan_done(self, info):
         # 后台定时扫描静默完成，不打扰；仅手动"深度扫描"显示结果
@@ -4432,21 +4451,21 @@ class MainWindow(QMainWindow):
     _pmc_done = False
 
     def _mem_private_mb(self):
-        """当前进程提交内存（PagefileUsage）MB；失败返回 -1"""
+        """当前进程提交内存（PagefileUsage）MB；失败返回 -1
+
+        ★ v1.18.46：ctypes Structure/WinDLL 全部模块级单例 —— 每次
+        调用都新建会泄漏 ctypes 元对象（实测每轮 +70 个、gc 素数代
+        才回收，深度回收清不掉），见文件头注释。"""
+        global _k32_mem
         try:
-            class PMC(ctypes.Structure):
-                _fields_ = [("cb", ctypes.c_ulong), ("pf", ctypes.c_ulong),
-                            ("pws", ctypes.c_size_t), ("ws", ctypes.c_size_t),
-                            ("q1", ctypes.c_size_t), ("q2", ctypes.c_size_t),
-                            ("q3", ctypes.c_size_t), ("q4", ctypes.c_size_t),
-                            ("pb", ctypes.c_size_t), ("ppb", ctypes.c_size_t)]
-            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            k32.K32GetProcessMemoryInfo.restype = ctypes.c_bool
-            k32.K32GetProcessMemoryInfo.argtypes = [
-                ctypes.c_void_p, ctypes.POINTER(PMC), ctypes.c_ulong]
-            pm = PMC(); pm.cb = ctypes.sizeof(PMC)
+            if _k32_mem is None:
+                _k32_mem = ctypes.WinDLL("kernel32", use_last_error=True)
+                _k32_mem.K32GetProcessMemoryInfo.restype = ctypes.c_bool
+                _k32_mem.K32GetProcessMemoryInfo.argtypes = [
+                    ctypes.c_void_p, ctypes.POINTER(_PMC), ctypes.c_ulong]
+            pm = _PMC(); pm.cb = ctypes.sizeof(_PMC)
             h = ctypes.windll.kernel32.GetCurrentProcess()
-            if not k32.K32GetProcessMemoryInfo(h, ctypes.byref(pm), pm.cb):
+            if not _k32_mem.K32GetProcessMemoryInfo(h, ctypes.byref(pm), pm.cb):
                 return -1.0
             return pm.pb / 1048576.0
         except Exception:
@@ -4482,12 +4501,17 @@ class MainWindow(QMainWindow):
                 self._empty_working_set()
                 self._force_gc()
                 after = self._mem_private_mb()
-                if after > 1000:
-                    # ★ 最后防线：回收后仍 >1GB（泄漏在非 UI 侧）。
-                    #   不自动重启 —— 单实例锁/未保存状态有竞态风险，
-                    #   且可能陷入无限重启循环。弹窗明确提示用户重启，
-                    #   用户点一下即可彻底清空进程内存。
-                    QTimer.singleShot(0, self._warn_restart)
+                if after > 700:
+                    # ★ v1.18.46：深度回收后仍 >700MB —— 泄漏在非 UI 侧
+                    #   （node/asyncio），UI 侧全清也救不回来。
+                    #   用户明确要求"彻底解决前默认直接重启"：
+                    #   加防重入标志（避免每 15s 叠一个模态框），
+                    #   3 秒倒计时后干净退出并拉起新进程。
+                    if getattr(self, "_restart_pending", False):
+                        return
+                    self._restart_pending = True
+                    self._toast(f"内存 {int(after)}MB 回收无效，3 秒后自动重启…")
+                    QTimer.singleShot(3000, self._auto_restart)
                 else:
                     self._toast(f"内存已达 {int(mb)}MB，已深度回收（聊天记录未丢失）")
             elif mb >= self._MEM_HARD_MB:
@@ -4504,17 +4528,45 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    def _warn_restart(self):
-        """极限回收仍无效时：明确提示用户重启（不自动重启，避免竞态）"""
+    def _auto_restart(self):
+        """★ v1.18.46：内存回收无效时自动重启（用户明确要求）。
+
+        单实例锁竞态：本进程先完全退出（释放锁/端口），再由外部独立
+        shell 延迟 2 秒拉起 —— 绝不在本进程内 Popen 后立即 quit
+        冷却：10 分钟内已自动重启过就不再重启（防无限重启循环）。"""
+        import subprocess
+        import tempfile
         try:
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.warning(
-                self, "内存占用过高",
-                f"程序内存占用超过 {int(self._mem_private_mb())}MB，已尝试深度回收但仍偏高。\n\n"
-                "请保存好正在传输的内容后，重启闪传程序。\n"
-                "聊天记录保存在磁盘，重启不会丢失。")
+            from ..config import app_data_dir
+            marker = os.path.join(app_data_dir(), "auto_restart.flag")
+            try:
+                last = float(open(marker, encoding="utf-8").read().strip())
+                if time.time() - last < 600:
+                    # 10 分钟内重启过：泄漏是持续性的，重启只是延缓，
+                    # 避免无限循环 —— 弹一次提示（有防重入）后停止。
+                    self._toast("内存持续偏高且刚重启过，请反馈此问题")
+                    return
+            except Exception:
+                pass
+            with open(marker, "w", encoding="utf-8") as f:
+                f.write(str(int(time.time())))
+            # 外部独立进程：等本进程退出后拉起（bat: 等 2 秒再 start）
+            exe = sys.executable
+            if getattr(sys, "frozen", False):
+                target = f'"{exe}"'
+            else:
+                target = f'"{exe}" "{os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "main.py"}"'
+            # 用 cmd /c 起一个瞬时 shell：等待 2 秒后启动，与本进程完全脱钩
+            bat = f'@echo off\nping 127.0.0.1 -n 3 >nul\nstart "" {target}\n'
+            fd, bat_path = tempfile.mkstemp(suffix=".bat")
+            os.close(fd)
+            with open(bat_path, "w", encoding="mbcs") as f:
+                f.write(bat)
+            subprocess.Popen(["cmd", "/c", bat_path], close_fds=True,
+                             creationflags=0x08000000)  # CREATE_NO_WINDOW
         except Exception:
-            self._toast("内存占用过高，请重启闪传程序")
+            pass
+        self._real_quit()
 
     def _deep_reclaim(self):
         """★ v1.18.44：应用内最大力度内存回收。

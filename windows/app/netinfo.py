@@ -38,41 +38,51 @@ class IfaceInfo:
             return 24
 
 
+# ★ v1.18.46：这三个 ctypes 结构必须模块级单例。
+#   旧实现定义在 _ctypes_get_adapters() 内部，而 _update_self_info
+#   每 5 秒调一次 get_local_ifaces() → 每 5 秒重新创建 3 个 Structure
+#   类（每个带十几个 CField/StgDict/PyCStructType 元对象）。一晚上
+#   17280 次 × ~70 对象 = 百万级常驻对象，且类型对象参与循环引用、
+#   gc 素数代才回收 —— 深度回收清不掉，正是"1222MB 回收后仍超、
+#   弹窗反复弹"的真凶。
+class IP_ADDRESS_STRING(ctypes.Structure):
+    _fields_ = [("String", ctypes.c_char * 16)]
+
+
+class IP_ADDR_STRING(ctypes.Structure):
+    _fields_ = [
+        ("Next", ctypes.c_void_p),
+        ("IpAddress", IP_ADDRESS_STRING),
+        ("IpMask", IP_ADDRESS_STRING),
+        ("Context", ctypes.c_ulong),
+    ]
+
+
+class IP_ADAPTER_INFO(ctypes.Structure):
+    _fields_ = [
+        ("Next", ctypes.c_void_p),
+        ("ComboIndex", ctypes.c_ulong),
+        ("AdapterName", ctypes.c_char * 260),
+        ("Description", ctypes.c_char * 132),
+        ("AddressLength", ctypes.c_uint),
+        ("Address", ctypes.c_ubyte * 8),
+        ("Index", ctypes.c_ulong),
+        ("Type", ctypes.c_uint),
+        ("DhcpEnabled", ctypes.c_uint),
+        ("CurrentIpAddress", ctypes.c_void_p),
+        ("IpAddressList", IP_ADDR_STRING),
+        ("GatewayList", IP_ADDR_STRING),
+        ("DhcpServer", IP_ADDR_STRING),
+        ("HaveWins", ctypes.c_int),
+        ("PrimaryWinsServer", IP_ADDRESS_STRING),
+        ("SecondaryWinsServer", IP_ADDRESS_STRING),
+        ("LeaseObtained", ctypes.c_ulong),
+        ("LeaseExpires", ctypes.c_ulong),
+    ]
+
+
 def _ctypes_get_adapters():
     """通过 IP_ADAPTER_INFO 枚举网卡。返回 (ifaces, gateways) 或抛异常。"""
-    class IP_ADDRESS_STRING(ctypes.Structure):
-        _fields_ = [("String", ctypes.c_char * 16)]
-
-    class IP_ADDR_STRING(ctypes.Structure):
-        _fields_ = [
-            ("Next", ctypes.c_void_p),
-            ("IpAddress", IP_ADDRESS_STRING),
-            ("IpMask", IP_ADDRESS_STRING),
-            ("Context", ctypes.c_ulong),
-        ]
-
-    class IP_ADAPTER_INFO(ctypes.Structure):
-        _fields_ = [
-            ("Next", ctypes.c_void_p),
-            ("ComboIndex", ctypes.c_ulong),
-            ("AdapterName", ctypes.c_char * 260),
-            ("Description", ctypes.c_char * 132),
-            ("AddressLength", ctypes.c_uint),
-            ("Address", ctypes.c_ubyte * 8),
-            ("Index", ctypes.c_ulong),
-            ("Type", ctypes.c_uint),
-            ("DhcpEnabled", ctypes.c_uint),
-            ("CurrentIpAddress", ctypes.c_void_p),
-            ("IpAddressList", IP_ADDR_STRING),
-            ("GatewayList", IP_ADDR_STRING),
-            ("DhcpServer", IP_ADDR_STRING),
-            ("HaveWins", ctypes.c_int),
-            ("PrimaryWinsServer", IP_ADDRESS_STRING),
-            ("SecondaryWinsServer", IP_ADDRESS_STRING),
-            ("LeaseObtained", ctypes.c_ulong),
-            ("LeaseExpires", ctypes.c_ulong),
-        ]
-
     ih = ctypes.windll.iphlpapi.GetAdaptersInfo
     size = ctypes.c_ulong(0)
     ih(None, ctypes.byref(size))
