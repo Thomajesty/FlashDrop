@@ -10,6 +10,7 @@
 """
 
 import asyncio
+import concurrent.futures
 import hashlib
 import json as jsonlib
 import os
@@ -1469,7 +1470,16 @@ class FlashNode:
         mid = util.gen_uid()
         fut = asyncio.run_coroutine_threadsafe(
             self._send_text_task(list(target_ids), mid, text), self.loop)
-        return mid, fut.result(timeout=timeout)
+        try:
+            return mid, fut.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            # ★ v1.18.45：超时必须 cancel —— 否则协程在 loop 里继续跑
+            #   （_wait_conn 15s + ACK 12s + 重试退避），每轮补发泄漏一个
+            #   协程及其帧（持有 text/conn/future），离线设备每 10s 一轮、
+            #   挂一晚上数千个 → 数 GB。cancel 让 asyncio 抛 CancelledError
+            #   沿等待链解除阻塞并释放帧。
+            fut.cancel()
+            raise
 
     async def _send_text_task(self, target_ids, mid, text):
         # ★ v1.18.15：返回 {peer_id: ok/failed/timeout}，供待发队列判定去留
@@ -1538,7 +1548,14 @@ class FlashNode:
         fut = asyncio.run_coroutine_threadsafe(
             self._send_files_sync_task(list(target_ids), list(paths), tid_seed),
             self.loop)
-        return fut.result(timeout=timeout)
+        try:
+            return fut.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            # ★ v1.18.45：超时 cancel —— 否则发送协程在 loop 里继续持有
+            #   512KB 文件分块 + 连接 + future（待发队列每 10s 重试，
+            #   一晚上数千个泄漏协程 × 512KB = GB 级内存）。
+            fut.cancel()
+            raise
 
     async def _send_files_sync_task(self, target_ids, paths, tid_seed=None):
         results = {}
@@ -1784,6 +1801,14 @@ class FlashNode:
         except Exception as e:
             return ("fail", str(e), True)
         finally:
+            # ★ v1.18.45：外层超时 cancel 时，ready_task/ok_task 这两条
+            #   ensure_future 子任务会挂在 loop 上等**永远不会被 set**
+            #   的 future（dict 已清、对端已丢）—— 每次 cancel 泄漏 2 条
+            #   task 及其帧。待发队列每 10s 重试，一晚上数千条 → GB 级。
+            #   这里统一取消（局部变量可能未赋值，用 hasattr 风格守卫）。
+            for _t in (locals().get("ready_task"), locals().get("ok_task")):
+                if _t is not None and not _t.done():
+                    _t.cancel()
             self.ready_waiters.pop((peer_id, tid), None)
             self.out_waiters.pop((peer_id, tid), None)
 
