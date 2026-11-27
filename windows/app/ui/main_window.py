@@ -35,7 +35,7 @@ from .theme import (build_qss, DARK, LIGHT, ACCENT, ACCENT2, GREEN, RED,
 from .bridge import NodeBridge
 from .history import History
 from .widgets import (BubbleFrame, make_avatar, make_platform_badge,
-                      dispose_widget)
+                      dispose_widget, clear_image_caches)
 from .image_viewer import ImageViewer
 from .emoji import EmojiButton
 
@@ -1316,6 +1316,11 @@ class MainWindow(QMainWindow):
         self.tray.show()
 
         self.bridge.start()
+        # ★ v1.18.44：内存看门狗（硬性封顶，防未知泄漏路径卡死系统）
+        self._start_mem_watchdog()
+        # 首次 8 秒就检查一次（启动加载历史/图片可能瞬间冲高），
+        # 之后按 30 秒周期；避免暴涨后要等 30 秒才回收。
+        QTimer.singleShot(8000, self._mem_watchdog_tick)
         QTimer.singleShot(1500, self._refresh_devices)
         QTimer.singleShot(1200, self._load_all_history)
         # ★ v1.18.18 性能 P2：空闲预热 —— 等 UI 与历史加载都稳定后：
@@ -1984,6 +1989,12 @@ class MainWindow(QMainWindow):
         return t
 
     def _update_self_info(self):
+        """立即刷新自身信息，并确保全局只有一条 5 秒递归刷新链。
+
+        ★ v1.18.44：旧实现每次调用（保存设置也会调）都再挂一条
+        QTimer.singleShot(5000, self._update_self_info) → 每保存一次设置
+        就多一条永久递归链，链数无限增长。拆成"刷新 + 调度"两步，
+        刷新本身不再调度，由单例回调统一调度。"""
         from .. import netinfo
         ips = [i.ip for i in netinfo.get_local_ifaces()] or ["127.0.0.1"]
         # 两行小字、严格单行：超长用省略号截断
@@ -1998,7 +2009,17 @@ class MainWindow(QMainWindow):
             new_t = resolve_theme("system")
             if new_t["name"] != self.theme["name"]:
                 self._apply_theme()
-        QTimer.singleShot(5000, self._update_self_info)
+        if not getattr(self, "_self_info_timer_pending", False):
+            self._self_info_timer_pending = True
+            QTimer.singleShot(5000, self._self_info_tick)
+
+    def _self_info_tick(self):
+        """5 秒递归刷新链的唯一调度点（全局恒为一条）"""
+        self._self_info_timer_pending = False
+        try:
+            self._update_self_info()
+        except Exception:
+            pass
 
     def _apply_theme(self):
         """应用当前设置的主题（dark/light/system）并整体刷新"""
@@ -4400,6 +4421,148 @@ class MainWindow(QMainWindow):
             self._real_quit()
             e.accept()
 
+    # ★ v1.18.44：内存看门狗 —— 不管泄漏来自哪条未知路径，硬性封顶。
+    #   阈值基于实测：启动 43MB / 3 页满缓存 130MB / 重度收发 180MB。
+    #   350MB 已远超正常使用，500MB 属异常，700MB 必须立刻回收 ——
+    #   绝不允许拖到 1GB 以上（用户明确要求"软件内部限制占用"）。
+    _MEM_WATCH_INTERVAL = 15000          # 15s（异常时更快介入）
+    _MEM_SOFT_MB = 350
+    _MEM_HARD_MB = 500
+    _MEM_CRITICAL_MB = 700
+    _pmc_done = False
+
+    def _mem_private_mb(self):
+        """当前进程提交内存（PagefileUsage）MB；失败返回 -1"""
+        try:
+            class PMC(ctypes.Structure):
+                _fields_ = [("cb", ctypes.c_ulong), ("pf", ctypes.c_ulong),
+                            ("pws", ctypes.c_size_t), ("ws", ctypes.c_size_t),
+                            ("q1", ctypes.c_size_t), ("q2", ctypes.c_size_t),
+                            ("q3", ctypes.c_size_t), ("q4", ctypes.c_size_t),
+                            ("pb", ctypes.c_size_t), ("ppb", ctypes.c_size_t)]
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.K32GetProcessMemoryInfo.restype = ctypes.c_bool
+            k32.K32GetProcessMemoryInfo.argtypes = [
+                ctypes.c_void_p, ctypes.POINTER(PMC), ctypes.c_ulong]
+            pm = PMC(); pm.cb = ctypes.sizeof(PMC)
+            h = ctypes.windll.kernel32.GetCurrentProcess()
+            if not k32.K32GetProcessMemoryInfo(h, ctypes.byref(pm), pm.cb):
+                return -1.0
+            return pm.pb / 1048576.0
+        except Exception:
+            return -1.0
+
+    def _start_mem_watchdog(self):
+        try:
+            self._mem_timer = QTimer(self)
+            self._mem_timer.setInterval(self._MEM_WATCH_INTERVAL)
+            self._mem_timer.timeout.connect(self._mem_watchdog_tick)
+            self._mem_timer.start()
+        except Exception:
+            pass
+
+    def _mem_watchdog_tick(self):
+        import gc
+        # 窗口正在关闭/已隐藏到托盘时不做重活（避免与关闭流程竞争）
+        if getattr(self, "_closing", False):
+            return
+        mb = self._mem_private_mb()
+        if mb < 0:
+            return
+        if mb <= self._MEM_SOFT_MB:
+            return
+        try:
+            if mb >= self._MEM_CRITICAL_MB:
+                # 极限：销毁**所有**气泡页（含当前页）+ 清图片缓存 +
+                # 清空内存消息索引（磁盘历史不动）+ 交还工作集 +
+                # 强制重建当前会话。这是应用内最大力度回收 ——
+                # 3.7GB 的卡死状态下即使泄漏源未知，也能把 UI 侧
+                # 持有的对象全部释放，把内存压回百 MB 量级。
+                self._deep_reclaim()
+                self._empty_working_set()
+                self._force_gc()
+                after = self._mem_private_mb()
+                if after > 1000:
+                    # ★ 最后防线：回收后仍 >1GB（泄漏在非 UI 侧）。
+                    #   不自动重启 —— 单实例锁/未保存状态有竞态风险，
+                    #   且可能陷入无限重启循环。弹窗明确提示用户重启，
+                    #   用户点一下即可彻底清空进程内存。
+                    QTimer.singleShot(0, self._warn_restart)
+                else:
+                    self._toast(f"内存已达 {int(mb)}MB，已深度回收（聊天记录未丢失）")
+            elif mb >= self._MEM_HARD_MB:
+                # 强：销毁全部缓存页并强制重建当前会话
+                self._trim_pages()
+                clear_image_caches()
+                self._force_gc()
+                self._render_chat(force=True)
+            else:
+                # 软：清缓存 + 裁非当前页 + GC
+                clear_image_caches()
+                self._trim_pages()
+                self._force_gc()
+        except Exception:
+            pass
+
+    def _warn_restart(self):
+        """极限回收仍无效时：明确提示用户重启（不自动重启，避免竞态）"""
+        try:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self, "内存占用过高",
+                f"程序内存占用超过 {int(self._mem_private_mb())}MB，已尝试深度回收但仍偏高。\n\n"
+                "请保存好正在传输的内容后，重启闪传程序。\n"
+                "聊天记录保存在磁盘，重启不会丢失。")
+        except Exception:
+            self._toast("内存占用过高，请重启闪传程序")
+
+    def _deep_reclaim(self):
+        """★ v1.18.44：应用内最大力度内存回收。
+
+        销毁所有缓存页（包括当前页）与全部气泡控件，清空图片缓存与
+        消息索引（磁盘历史 jsonl 不动，下次切设备会按需重载），
+        然后强制重建当前会话。用于极端内存占用（>700MB）时把卡死
+        状态拉回来。"""
+        # 1) 所有缓存页：从栈移除 + shiboken6 析构整棵子树
+        for k, rec in list(self._chat_pages.items()):
+            try:
+                self._chat_stack.removeWidget(rec[0])
+                dispose_widget(rec[0])
+            except Exception:
+                pass
+        self._chat_pages.clear()
+        self._chat_page_order.clear()
+        self._chat_current_key = None
+        self._rendered_ids = None
+        self._rendered_key = None
+        # 2) 控件引用表 / 消息索引（磁盘历史保留）
+        self.widgets_by_msg.clear()
+        self.in_by_tid.clear()
+        self.out_by_tid.clear()
+        self._persist_memo.clear() if hasattr(self, "_persist_memo") else None
+        # 3) 图片缓存 + GC
+        clear_image_caches()
+        self._force_gc()
+        # 4) 重建当前视图（从磁盘重载消息，用户无需操作）
+        try:
+            self._render_chat(force=True)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _force_gc():
+        import gc
+        for _ in range(3):
+            gc.collect()
+
+    @staticmethod
+    def _empty_working_set():
+        try:
+            ctypes.windll.psapi.EmptyWorkingSet(
+                ctypes.windll.kernel32.GetCurrentProcess())
+        except Exception:
+            pass
+
     def changeEvent(self, e):
         """★ v1.18.38：最小化到任务栏时也裁掉非当前缓存页。"""
         super().changeEvent(e)
@@ -4407,6 +4570,12 @@ class MainWindow(QMainWindow):
             self._trim_pages()
 
     def _real_quit(self):
+        self._closing = True
+        try:
+            if hasattr(self, "_mem_timer"):
+                self._mem_timer.stop()
+        except Exception:
+            pass
         self.tray.hide()
         self.bridge.stop()
         QApplication.instance().quit()

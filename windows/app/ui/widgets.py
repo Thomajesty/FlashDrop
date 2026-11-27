@@ -16,6 +16,17 @@ from .. import util
 from .theme import ACCENT, ACCENT2, RED, GREEN, BUBBLE_SCHEMES
 
 
+def clear_image_caches():
+    """★ v1.18.44：内存看门狗用 —— 清空所有图片/位图缓存的引用。
+
+    QPixmap 是隐式共享（implicitly shared）：清掉 dict 引用后，仍被
+    气泡/设备 widget 持有的像素由那些 widget 继续持有（不会显示异常），
+    不再被引用的则 Qt 立即释放像素内存。**不要 shiboken6.delete** ——
+    那会连正在显示的 widget 的 pixmap 一起销毁（共享同一 C++ 对象）。"""
+    for cache in (_AVATAR_CACHE, _BADGE_CACHE, _THUMB_CACHE, _ICON_CACHE):
+        cache.clear()
+
+
 def dispose_widget(w):
     """★ v1.18.42：立即析构已从布局摘除的 Qt 控件。
 
